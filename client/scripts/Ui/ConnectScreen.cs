@@ -20,7 +20,7 @@ public partial class ConnectScreen : Control
     /// <inheritdoc />
     public override void _Ready()
     {
-        _net = GetNode<NetClient>("NetClient");
+        _net = GetNode<NetClient>("/root/NetClient");
         _statusLabel = GetNode<Label>("Layout/Status");
         _rttLabel = GetNode<Label>("Layout/Rtt");
         _serverLabel = GetNode<Label>("Layout/Server");
@@ -80,6 +80,10 @@ public partial class ConnectScreen : Control
         if (status == ConnectionStatus.Connected && _net.ServerInfo is { } info)
         {
             _serverLabel.Text = $"{_serverUrl}  ·  v{info.ServerProtocolVersion}  ·  {info.TickRate}/{info.SnapshotRate} Hz";
+
+            // Handshake completo: la pantalla de conexión ya cumplió su función (Fase 1).
+            // La conexión sigue viva porque NetClient es autoload, no un hijo de esta escena.
+            GetTree().ChangeSceneToFile("res://scenes/Login.tscn");
         }
     }
 
@@ -87,18 +91,5 @@ public partial class ConnectScreen : Control
         => _rttLabel.Text = $"RTT {rttMs} ms  (media {_net.AverageRttMs:F0} ms)";
 
     private void OnKicked(KickReason reason, ResultCode detail, int serverProtocolVersion)
-    {
-        _rttLabel.Text = reason switch
-        {
-            KickReason.VersionMismatch =>
-                $"Actualiza el juego: el servidor usa el protocolo v{serverProtocolVersion}, tú la v{ProtocolVersion.Current}",
-            KickReason.RateLimited => "Demasiados mensajes enviados",
-            KickReason.Timeout => "Sin respuesta del cliente",
-            KickReason.ServerShutdown => "El servidor se está apagando",
-            KickReason.Banned => "Cuenta expulsada",
-            KickReason.LoggedInElsewhere => "Sesión abierta desde otro sitio",
-            KickReason.InvalidState or KickReason.ProtocolError => $"Error de protocolo ({detail})",
-            _ => $"Desconectado por el servidor ({reason})",
-        };
-    }
+        => _rttLabel.Text = ResultCodeText.Describe(reason, detail, serverProtocolVersion);
 }

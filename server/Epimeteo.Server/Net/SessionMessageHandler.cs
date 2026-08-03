@@ -1,3 +1,4 @@
+using Epimeteo.Server.Persistence.Accounts;
 using Epimeteo.Server.World;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Net.Messages;
@@ -14,35 +15,48 @@ namespace Epimeteo.Server.Net;
 /// no tocan estado de mundo, y hacerlos pasar por la cola del tick les añadiría hasta 50 ms que
 /// falsearían el RTT. Todo lo que sí toque el mundo irá a <see cref="IWorldInbox"/>.
 /// </para>
+/// <para>
+/// <c>Login</c> y <c>Register</c> también se resuelven aquí (tocan Postgres, no el tick), pero
+/// awaited: la sesión no procesa el siguiente frame hasta que la BD responde. No bloquea otras
+/// sesiones, que tienen su propio bucle de lectura.
+/// </para>
 /// </summary>
 public sealed class SessionMessageHandler
 {
     private readonly ServerOptions _options;
     private readonly IWorldInbox _worldInbox;
+    private readonly AuthService _auth;
     private readonly ILogger _log = Log.ForContext<SessionMessageHandler>();
 
-    public SessionMessageHandler(ServerOptions options, IWorldInbox worldInbox)
+    public SessionMessageHandler(ServerOptions options, IWorldInbox worldInbox, AuthService auth)
     {
         _options = options;
         _worldInbox = worldInbox;
+        _auth = auth;
     }
 
     /// <summary>Procesa un frame entrante. Llamado sólo desde el bucle de lectura de la sesión.</summary>
-    public void Handle(Session session, Opcode opcode, ReadOnlyMemory<byte> frame)
+    public Task HandleAsync(Session session, Opcode opcode, ReadOnlyMemory<byte> frame)
     {
         switch (opcode)
         {
             case Opcode.Hello:
                 HandleHello(session, frame);
-                break;
+                return Task.CompletedTask;
 
             case Opcode.Ping:
                 HandlePing(session, frame);
-                break;
+                return Task.CompletedTask;
+
+            case Opcode.Login:
+                return HandleLoginAsync(session, frame);
+
+            case Opcode.Register:
+                return HandleRegisterAsync(session, frame);
 
             default:
                 HandleUnrouted(session, opcode, frame);
-                break;
+                return Task.CompletedTask;
         }
     }
 
@@ -115,6 +129,56 @@ public sealed class SessionMessageHandler
         {
             ClientTimeMs = ping.ClientTimeMs,
             ServerTimeMs = ServerClock.NowMs,
+        });
+    }
+
+    private async Task HandleLoginAsync(Session session, ReadOnlyMemory<byte> frame)
+    {
+        if (!FrameCodec.TryDecodePayload<C2SLogin>(frame, out var login) || login is null)
+        {
+            _log.Warning("Login ilegible en la sesión {SessionId}", session.Id);
+            session.Kick(KickReason.ProtocolError);
+            return;
+        }
+
+        var outcome = await _auth
+            .LoginAsync(session.RemoteAddress, login.Username, login.Password)
+            .ConfigureAwait(false);
+
+        SendAuthResult(session, outcome);
+    }
+
+    private async Task HandleRegisterAsync(Session session, ReadOnlyMemory<byte> frame)
+    {
+        if (!FrameCodec.TryDecodePayload<C2SRegister>(frame, out var register) || register is null)
+        {
+            _log.Warning("Register ilegible en la sesión {SessionId}", session.Id);
+            session.Kick(KickReason.ProtocolError);
+            return;
+        }
+
+        var outcome = await _auth
+            .RegisterAsync(session.RemoteAddress, register.Username, register.Email, register.Password)
+            .ConfigureAwait(false);
+
+        SendAuthResult(session, outcome);
+    }
+
+    private void SendAuthResult(Session session, AuthOutcome outcome)
+    {
+        if (outcome.Ok)
+        {
+            session.AccountId = outcome.AccountId;
+            session.State = SessionState.Authenticated;
+            _log.Information("Sesión {SessionId} autenticada como cuenta {AccountId}", session.Id, outcome.AccountId);
+        }
+
+        session.Send(Opcode.AuthResult, new S2CAuthResult
+        {
+            Ok = outcome.Ok,
+            Code = outcome.Code,
+            AccountId = outcome.AccountId,
+            SessionToken = outcome.SessionToken,
         });
     }
 

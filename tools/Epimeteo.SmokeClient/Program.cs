@@ -25,6 +25,10 @@ internal static class Program
         await OpcodeDesconocido(url);
         await FrameDemasiadoGrande(url);
         await FrameDeTexto(url);
+        await RegistroYLogin(url);
+        await LoginConCredencialesIncorrectas(url);
+        await RegistroDuplicado(url);
+        await RateLimitDeLogin(url);
 
         if (args.Contains("--lento"))
         {
@@ -120,6 +124,105 @@ internal static class Program
 
         var kick = await ReceiveKick(ws);
         Check("Frame de texto → Kick(ProtocolError)", kick?.Reason == KickReason.ProtocolError);
+    }
+
+    /// <summary>
+    /// Fase 2: registrar una cuenta nueva, cerrar la conexión y volver a entrar con las mismas
+    /// credenciales en una conexión distinta — el criterio de aceptación de FASE-02-persistencia.
+    /// </summary>
+    private static async Task RegistroYLogin(string url)
+    {
+        var username = $"smoke_{Guid.NewGuid():N}"[..20];
+
+        using (var ws = await Open(url))
+        {
+            await Greet(ws);
+            var registerResult = await Auth(ws, Opcode.Register,
+                new C2SRegister { Username = username, Email = null, Password = "clave-de-prueba-123" });
+
+            Check("Registro nuevo → Ok", registerResult is { Ok: true, AccountId: > 0 });
+            Check("Registro nuevo → SessionToken presente", !string.IsNullOrEmpty(registerResult?.SessionToken));
+        }
+
+        using (var ws = await Open(url))
+        {
+            await Greet(ws);
+            var loginResult = await Auth(ws, Opcode.Login,
+                new C2SLogin { Username = username, Password = "clave-de-prueba-123" });
+
+            Check("Login con las mismas credenciales (otra conexión) → Ok", loginResult is { Ok: true });
+        }
+    }
+
+    private static async Task LoginConCredencialesIncorrectas(string url)
+    {
+        using var ws = await Open(url);
+        await Greet(ws);
+
+        var result = await Auth(ws, Opcode.Login,
+            new C2SLogin { Username = $"no_existe_{Guid.NewGuid():N}"[..20], Password = "cualquiera123" });
+
+        Check("Login con usuario inexistente → InvalidCredentials",
+            result is { Ok: false, Code: ResultCode.InvalidCredentials });
+    }
+
+    private static async Task RegistroDuplicado(string url)
+    {
+        var username = $"smoke_{Guid.NewGuid():N}"[..20];
+
+        using (var ws = await Open(url))
+        {
+            await Greet(ws);
+            await Auth(ws, Opcode.Register, new C2SRegister { Username = username, Email = null, Password = "clave-de-prueba-123" });
+        }
+
+        using var ws2 = await Open(url);
+        await Greet(ws2);
+        var result = await Auth(ws2, Opcode.Register,
+            new C2SRegister { Username = username, Email = null, Password = "otra-clave-456" });
+
+        Check("Registro con username repetido → AccountAlreadyExists",
+            result is { Ok: false, Code: ResultCode.AccountAlreadyExists });
+    }
+
+    /// <summary>
+    /// 5/minuto por IP (docs/01-protocolo.md), persistido en <c>login_attempts</c> y compartido
+    /// por todas las pruebas anteriores (misma IP 127.0.0.1 en local): no importa exactamente en
+    /// qué intento se dispara, sólo que tras varios ya está activo y se queda así el resto del
+    /// minuto — de ahí que sólo se compruebe el último de la tanda.
+    /// </summary>
+    private static async Task RateLimitDeLogin(string url)
+    {
+        var username = $"nunca_existe_{Guid.NewGuid():N}"[..20];
+        S2CAuthResult? last = null;
+
+        for (var i = 0; i < 6; i++)
+        {
+            using var ws = await Open(url);
+            await Greet(ws);
+            last = await Auth(ws, Opcode.Login, new C2SLogin { Username = username, Password = "cualquiera123" });
+        }
+
+        Check("Tras varios intentos fallidos en <1 min → RateLimited", last is { Ok: false, Code: ResultCode.RateLimited });
+    }
+
+    private static async Task Greet(ClientWebSocket ws)
+    {
+        await Send(ws, Opcode.Hello, new C2SHello { ProtocolVersion = ProtocolVersion.Current, ClientBuild = "smoke" });
+        await Receive(ws); // HelloAck; ya se comprueba en HandshakeYPing.
+    }
+
+    private static async Task<S2CAuthResult?> Auth<T>(ClientWebSocket ws, Opcode opcode, T payload)
+    {
+        await Send(ws, opcode, payload);
+        var (responseOpcode, frame) = await Receive(ws);
+
+        if (responseOpcode != Opcode.AuthResult)
+        {
+            return null;
+        }
+
+        return FrameCodec.TryDecodePayload<S2CAuthResult>(frame, out var result) ? result : null;
     }
 
     /// <summary>

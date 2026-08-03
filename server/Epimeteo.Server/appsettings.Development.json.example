@@ -1,0 +1,5 @@
+{
+  "ConnectionStrings": {
+    "Epimeteo": "Host=localhost;Database=epimeteo;Username=epimeteo;Password=CAMBIA_ESTO"
+  }
+}

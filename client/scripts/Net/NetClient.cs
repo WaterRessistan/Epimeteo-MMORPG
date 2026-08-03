@@ -37,6 +37,9 @@ public partial class NetClient : Node
     /// <summary>Se dispara cuando el servidor expulsa al cliente.</summary>
     public event Action<KickReason, ResultCode, int>? Kicked;
 
+    /// <summary>Se dispara al recibir la respuesta de <c>Login</c> o <c>Register</c>.</summary>
+    public event Action<S2CAuthResult>? AuthResultReceived;
+
     /// <summary>Estado actual de la conexión.</summary>
     public ConnectionStatus Status { get; private set; } = ConnectionStatus.Disconnected;
 
@@ -48,6 +51,12 @@ public partial class NetClient : Node
 
     /// <summary>Ritmos que anunció el servidor en su <c>HelloAck</c>.</summary>
     public S2CHelloAck? ServerInfo { get; private set; }
+
+    /// <summary>Cuenta autenticada. 0 hasta que <c>Login</c>/<c>Register</c> tienen éxito.</summary>
+    public long AccountId { get; private set; }
+
+    /// <summary>Token de sesión en claro recibido en el último <c>AuthResult</c> con éxito.</summary>
+    public string? SessionToken { get; private set; }
 
     /// <summary>Abre la conexión. Si ya había una, se descarta.</summary>
     public void ConnectTo(string url)
@@ -111,6 +120,14 @@ public partial class NetClient : Node
         }
     }
 
+    /// <summary>Manda <c>Login</c>. Sólo válido con la sesión en estado <c>Greeted</c>.</summary>
+    public void Login(string username, string password) =>
+        Send(Opcode.Login, new C2SLogin { Username = username, Password = password });
+
+    /// <summary>Manda <c>Register</c>. Sólo válido con la sesión en estado <c>Greeted</c>.</summary>
+    public void Register(string username, string? email, string password) =>
+        Send(Opcode.Register, new C2SRegister { Username = username, Email = email, Password = password });
+
     private void SendHello()
     {
         Send(Opcode.Hello, new C2SHello
@@ -124,7 +141,9 @@ public partial class NetClient : Node
 
     private void TickPing(double delta)
     {
-        if (_state != SessionState.Greeted)
+        // Ping es legal en cualquier estado a partir de Greeted (docs/01-protocolo.md); antes de
+        // eso el servidor aún no ha visto el Hello y lo rechazaría.
+        if (_state is SessionState.None or SessionState.Connecting)
         {
             return;
         }
@@ -173,6 +192,21 @@ public partial class NetClient : Node
                 if (FrameCodec.TryDecodePayload<S2CPong>(frame, out var pong) && pong is not null)
                 {
                     OnPong(pong);
+                }
+
+                break;
+
+            case Opcode.AuthResult:
+                if (FrameCodec.TryDecodePayload<S2CAuthResult>(frame, out var auth) && auth is not null)
+                {
+                    if (auth.Ok)
+                    {
+                        AccountId = auth.AccountId;
+                        SessionToken = auth.SessionToken;
+                        _state = SessionState.Authenticated;
+                    }
+
+                    AuthResultReceived?.Invoke(auth);
                 }
 
                 break;

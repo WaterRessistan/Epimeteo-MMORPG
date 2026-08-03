@@ -18,6 +18,7 @@ public enum ResultCode : ushort
     AccountAlreadyExists = 102,
     NameTaken = 103,
     NameInvalid = 104,
+    PasswordInvalid = 105,
 
     SlotOccupied = 200,
     NoCharacterSlots = 201,

@@ -7,11 +7,27 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Dapper" Version="2.1.79" />
+    <PackageReference Include="dbup-postgresql" Version="7.0.1" />
+    <PackageReference Include="Konscious.Security.Cryptography.Argon2" Version="1.3.1" />
+    <PackageReference Include="Npgsql" Version="10.0.3" />
     <PackageReference Include="Serilog.AspNetCore" Version="8.0.3" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\shared\Epimeteo.Shared\Epimeteo.Shared.csproj" />
+  </ItemGroup>
+
+  <!--
+    db/migrations/*.sql es la fuente de verdad (git, en la raíz del repo, fuera de este proyecto).
+    Se embeben en el assembly del servidor para que DbUp no dependa de encontrar la carpeta en
+    disco tras un `dotnet publish` + rsync (CLAUDE.md §7, Fase 5).
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\db\migrations\*.sql">
+      <Link>Persistence\Migrations\%(Filename)%(Extension)</Link>
+      <LogicalName>Epimeteo.Server.Persistence.Migrations.%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

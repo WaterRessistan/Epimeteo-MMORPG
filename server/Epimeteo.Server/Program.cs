@@ -1,5 +1,7 @@
 using Epimeteo.Server;
 using Epimeteo.Server.Net;
+using Epimeteo.Server.Persistence;
+using Epimeteo.Server.Persistence.Accounts;
 using Epimeteo.Server.World;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Time;
@@ -24,7 +26,23 @@ try
 
     var options = builder.Configuration.GetSection(ServerOptions.SectionName).Get<ServerOptions>() ?? new ServerOptions();
 
+    var connectionString = builder.Configuration.GetConnectionString("Epimeteo");
+    if (string.IsNullOrWhiteSpace(connectionString))
+    {
+        throw new InvalidOperationException(
+            "Falta ConnectionStrings:Epimeteo. Configúrala en appsettings.Development.json " +
+            "(fuera de git) — ver docs/fases/FASE-02-persistencia.md §2.");
+    }
+
+    MigrationRunner.Run(connectionString);
+
     builder.Services.AddSingleton(options);
+    builder.Services.AddSingleton(new NpgsqlConnectionFactory(connectionString));
+    builder.Services.AddSingleton<PasswordHasher>();
+    builder.Services.AddSingleton<AccountRepository>();
+    builder.Services.AddSingleton<LoginAttemptRepository>();
+    builder.Services.AddSingleton<SessionTokenService>();
+    builder.Services.AddSingleton<AuthService>();
     builder.Services.AddSingleton<WorldInbox>();
     builder.Services.AddSingleton<IWorldInbox>(sp => sp.GetRequiredService<WorldInbox>());
     builder.Services.AddSingleton<SessionMessageHandler>();

@@ -1,7 +1,6 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=2 format=3]
 
 [ext_resource type="Script" path="res://scripts/Ui/ConnectScreen.cs" id="1_screen"]
-[ext_resource type="Script" path="res://scripts/Net/NetClient.cs" id="2_net"]
 
 [node name="Connect" type="Control"]
 layout_mode = 3
@@ -20,9 +19,6 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 color = Color(0.078, 0.086, 0.129, 1)
-
-[node name="NetClient" type="Node" parent="."]
-script = ExtResource("2_net")
 
 [node name="Layout" type="VBoxContainer" parent="."]
 layout_mode = 1

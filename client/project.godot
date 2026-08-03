@@ -10,6 +10,12 @@ config/description="MMORPG 2D top-down"
 run/main_scene="res://scenes/Connect.tscn"
 config/features=PackedStringArray("4.5", "C#", "Forward Plus")
 
+[autoload]
+
+; NetClient sobrevive a los cambios de escena (Connect → Login → Register): la conexión
+; WebSocket abierta en Connect.tscn sigue viva cuando el jugador ya está en la pantalla de login.
+NetClient="*res://scripts/Net/NetClient.cs"
+
 [dotnet]
 
 project/assembly_name="Epimeteo.Client"

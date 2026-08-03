@@ -65,6 +65,9 @@ public sealed class Session
     /// <summary>Build declarada por el cliente en su <c>Hello</c>. Informativa.</summary>
     public string ClientBuild { get; internal set; } = string.Empty;
 
+    /// <summary>Cuenta autenticada. 0 hasta que <c>Login</c>/<c>Register</c> tienen éxito.</summary>
+    public long AccountId { get; internal set; }
+
     /// <summary>Rate limiter por familia de opcode. Sólo lo usa el bucle de lectura.</summary>
     internal SessionRateLimiter RateLimiter { get; } = new();
 
@@ -187,7 +190,7 @@ public sealed class Session
                 while (!result.EndOfMessage);
 
                 Interlocked.Exchange(ref _lastInboundMs, ServerClock.NowMs);
-                HandleFrame(buffer.AsMemory(0, total));
+                await HandleFrameAsync(buffer.AsMemory(0, total)).ConfigureAwait(false);
 
                 if (IsClosing)
                 {
@@ -201,7 +204,7 @@ public sealed class Session
         }
     }
 
-    private void HandleFrame(ReadOnlyMemory<byte> frame)
+    private async Task HandleFrameAsync(ReadOnlyMemory<byte> frame)
     {
         if (!FrameCodec.TryReadOpcode(frame.Span, out var opcode))
         {
@@ -237,7 +240,10 @@ public sealed class Session
             return;
         }
 
-        _handler.Handle(this, opcode, frame);
+        // Login/Register cruzan a Postgres de forma async, awaited aquí mismo: esta sesión no
+        // vuelve a leer el socket hasta que responden, pero no bloquea ni el tick de mundo (regla
+        // de CLAUDE.md §4) ni las demás sesiones, que corren en su propia tarea.
+        await _handler.HandleAsync(this, opcode, frame).ConfigureAwait(false);
     }
 
     private async Task SendLoopAsync()
