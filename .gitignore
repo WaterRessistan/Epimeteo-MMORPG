@@ -1,0 +1,46 @@
+# ---- .NET ----
+bin/
+obj/
+*.user
+*.suo
+*.userprefs
+artifacts/
+publish/
+[Dd]ebug/
+[Rr]elease/
+*.nupkg
+
+# ---- Godot 4 ----
+.godot/
+.import/
+export.cfg
+export_presets.cfg
+*.translation
+# Binarios exportados
+/build/
+/exports/
+
+# ---- Secretos y entorno ----
+appsettings.Development.json
+appsettings.Production.json
+appsettings.*.local.json
+.env
+.env.*
+*.pfx
+*.key
+deploy/secrets/
+
+# ---- Datos locales ----
+*.log
+logs/
+pgdata/
+*.db
+*.sqlite
+
+# ---- Editores / SO ----
+.vs/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
