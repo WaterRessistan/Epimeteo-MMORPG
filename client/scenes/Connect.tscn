@@ -1,0 +1,72 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/Ui/ConnectScreen.cs" id="1_screen"]
+[ext_resource type="Script" path="res://scripts/Net/NetClient.cs" id="2_net"]
+
+[node name="Connect" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_screen")
+
+[node name="Background" type="ColorRect" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.078, 0.086, 0.129, 1)
+
+[node name="NetClient" type="Node" parent="."]
+script = ExtResource("2_net")
+
+[node name="Layout" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 16.0
+offset_top = 16.0
+offset_right = -16.0
+offset_bottom = -16.0
+grow_horizontal = 2
+grow_vertical = 2
+alignment = 1
+theme_override_constants/separation = 6
+
+[node name="Title" type="Label" parent="Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 24
+text = "EPIMETEO"
+horizontal_alignment = 1
+
+[node name="Status" type="Label" parent="Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "Desconectado"
+horizontal_alignment = 1
+
+[node name="Rtt" type="Label" parent="Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 10
+text = "RTT --"
+horizontal_alignment = 1
+
+[node name="Server" type="Label" parent="Layout"]
+layout_mode = 2
+modulate = Color(1, 1, 1, 0.5)
+theme_override_font_sizes/font_size = 8
+text = "ws://127.0.0.1:5100/ws"
+horizontal_alignment = 1
+
+[node name="Hint" type="Label" parent="Layout"]
+visible = false
+layout_mode = 2
+modulate = Color(1, 1, 1, 0.6)
+theme_override_font_sizes/font_size = 8
+text = "Pulsa Enter para reintentar"
+horizontal_alignment = 1

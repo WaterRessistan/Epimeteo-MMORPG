@@ -1,0 +1,32 @@
+; Configuración del proyecto Godot de Epimeteo.
+; Formato de Godot 4.5. Ver CLAUDE.md §5 para las reglas de presentación.
+
+config_version=5
+
+[application]
+
+config/name="Epimeteo"
+config/description="MMORPG 2D top-down"
+run/main_scene="res://scenes/Connect.tscn"
+config/features=PackedStringArray("4.5", "C#", "Forward Plus")
+
+[dotnet]
+
+project/assembly_name="Epimeteo.Client"
+
+[display]
+
+; 480x270 escalado a entero: x4 = 1080p exacto (CLAUDE.md §2).
+window/size/viewport_width=480
+window/size/viewport_height=270
+window/size/window_width_override=1440
+window/size/window_height_override=810
+window/stretch/mode="canvas_items"
+window/stretch/aspect="keep"
+
+[rendering]
+
+; 0 = Nearest. Obligatorio para pixel art.
+textures/canvas_textures/default_texture_filter=0
+2d/snap/snap_2d_transforms_to_pixel=true
+2d/snap/snap_2d_vertices_to_pixel=true

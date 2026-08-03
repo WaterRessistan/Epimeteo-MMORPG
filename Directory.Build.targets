@@ -1,0 +1,12 @@
+<Project>
+
+  <!--
+    Warnings como errores sólo donde lo exige CLAUDE.md §4: shared/ y server/.
+    Va en .targets y no en .props porque los proyectos declaran <EpimeteoStrict>
+    en su propio cuerpo, que se evalúa DESPUÉS de importar Directory.Build.props.
+  -->
+  <PropertyGroup Condition="'$(EpimeteoStrict)' == 'true'">
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+</Project>

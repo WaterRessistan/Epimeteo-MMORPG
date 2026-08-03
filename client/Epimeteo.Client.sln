@@ -1,0 +1,31 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Solución del cliente. Godot compila ESTA, no la de la raíz: necesita las configuraciones
+# ExportDebug/ExportRelease y espera el .sln junto a project.godot.
+Project("{9A19103F-16F7-32BF-9C79-9CE0FDA1F17C}") = "Epimeteo.Client", "Epimeteo.Client.csproj", "{C4283484-C7DE-4EF2-8328-CA3E125FE115}"
+EndProject
+Project("{9A19103F-16F7-32BF-9C79-9CE0FDA1F17C}") = "Epimeteo.Shared", "..\shared\Epimeteo.Shared\Epimeteo.Shared.csproj", "{6961796A-3A07-4379-8F94-7701BA368FDB}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		ExportDebug|Any CPU = ExportDebug|Any CPU
+		ExportRelease|Any CPU = ExportRelease|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{C4283484-C7DE-4EF2-8328-CA3E125FE115}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C4283484-C7DE-4EF2-8328-CA3E125FE115}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C4283484-C7DE-4EF2-8328-CA3E125FE115}.ExportDebug|Any CPU.ActiveCfg = ExportDebug|Any CPU
+		{C4283484-C7DE-4EF2-8328-CA3E125FE115}.ExportDebug|Any CPU.Build.0 = ExportDebug|Any CPU
+		{C4283484-C7DE-4EF2-8328-CA3E125FE115}.ExportRelease|Any CPU.ActiveCfg = ExportRelease|Any CPU
+		{C4283484-C7DE-4EF2-8328-CA3E125FE115}.ExportRelease|Any CPU.Build.0 = ExportRelease|Any CPU
+		{6961796A-3A07-4379-8F94-7701BA368FDB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6961796A-3A07-4379-8F94-7701BA368FDB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6961796A-3A07-4379-8F94-7701BA368FDB}.ExportDebug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6961796A-3A07-4379-8F94-7701BA368FDB}.ExportDebug|Any CPU.Build.0 = Debug|Any CPU
+		{6961796A-3A07-4379-8F94-7701BA368FDB}.ExportRelease|Any CPU.ActiveCfg = Release|Any CPU
+		{6961796A-3A07-4379-8F94-7701BA368FDB}.ExportRelease|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
