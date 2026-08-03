@@ -1,32 +1,43 @@
 # STATUS — Epimeteo MMORPG
 
-**Última actualización:** 2026-08-03 · **Fase actual:** 2 en curso (persistencia y autenticación)
+**Última actualización:** 2026-08-03 · **Fase actual:** 2 CERRADA (persistencia y autenticación) → arranca Fase 3
 
 ## Estado
 
 | Área | Estado |
 |---|---|
 | Diseño y arquitectura | ✅ Cerrado (`docs/00`, `01`, `02`, `03`) |
-| Repositorio git | ✅ Fases 0 y 1 commiteadas; Fase 2 (en curso) commiteada en este push |
+| Repositorio git | ✅ Fases 0 y 1 commiteadas; Fase 2 commiteada, verificada en producción en esta sesión |
 | Solución .NET | ✅ `Epimeteo.sln` (Shared + Server + Server.Tests + Shared.Tests + tools) |
 | Protocolo | ✅ Envelope, opcodes, tabla de estados, códec MessagePack; + `Login`/`Register`/`AuthResult` tipados |
 | Servidor | ✅ Kestrel 5100/5101, sesiones, rate limit, tick 20 Hz, `/status`; + migraciones DbUp al arrancar, `AuthService` (Login/Register) en el hilo de red |
-| Cliente Godot | ✅ Conecta, handshake, Ping 1 Hz, RTT; + pantallas `Login`/`Register`, transición desde `Connect` |
-| Tests | ✅ 16/16 compartidos + 6/13 servidor en verde, **7 saltados** (necesitan Postgres real, no configurado en esta sesión) |
-| Base de datos | 🟡 Esquema y migración `0001_init.sql` escritos; **Postgres NO instalado/verificado en este entorno** — nunca se ha ejecutado la migración de verdad |
+| Cliente Godot | ✅ Conecta, handshake, Ping 1 Hz, RTT; + pantallas `Login`/`Register`, transición desde `Connect` (no probado con editor Godot en esta sesión — servidor de producción es headless, ver "Verificación Fase 2") |
+| Tests | ✅ 16/16 compartidos + **13/13 servidor en verde** (los 7 que dependían de Postgres ya no se saltan) |
+| Base de datos | ✅ **Postgres 16.14 instalado y verificado**, migración `0001_init.sql` aplicada, 5 tablas + `schemaversions` creadas |
 | Contenido (`content/`) | ❌ |
 | Despliegue | ❌ |
 
 ## Entorno
 
-- Desarrollo: WSL2 Ubuntu 24.04 en `/home/mariox/gits/mmorpg`. WSLg disponible (`DISPLAY=:0`).
-- **.NET SDK 8.0.423** en `~/.dotnet` (script oficial, sin sudo). `PATH` y `DOTNET_ROOT` en `~/.bashrc`.
-  `sudo` no funciona desde la sesión de Claude Code por falta de TTY; si se quiere el paquete de
-  apt, hay que lanzarlo desde una terminal normal.
-- **Godot 4.5.1 .NET** en `~/godot/`, con enlace `~/godot/godot`.
-- Producción: servidor Ubuntu propio. 80/443/8080 ocupados.
-  **Sin confirmar qué proceso tiene el 443.** Comprobar en Fase 5 con
-  `sudo ss -lntp | grep -E ':(80|443|8080)\b'`.
+- **Esta sesión trabajó directamente en el servidor de producción** (Ubuntu 24.04.3 LTS, `arm64`,
+  hostname `vnic-mario`, usuario `ubuntu`), no en el WSL2 de desarrollo. `sudo` con TTY disponible.
+- **.NET SDK 8.0.129** instalado por `apt` (paquete nativo `dotnet-sdk-8.0` del repo de Ubuntu
+  24.04, no el script de Microsoft) → `/usr/bin/dotnet`. Antes de esta sesión no había `dotnet`
+  en este servidor.
+- **PostgreSQL 16.14** — ya estaba instalado y corriendo (`postgresql@16-main.service`, activo)
+  antes de empezar esta sesión; no hizo falta `apt install`. El rol `epimeteo` y la BD `epimeteo`
+  también existían ya (de un intento anterior no documentado), pero sin contraseña conocida →
+  se resetió con `ALTER ROLE epimeteo WITH PASSWORD ...` (generada con `openssl rand`, guardada
+  sólo en `appsettings.Development.json`, gitignored). Escucha sólo en `127.0.0.1:5432`.
+- No hay Godot instalado en este servidor (es headless). El criterio de aceptación §12 puntos
+  3–7 (registro/login/rate-limit) se verificó con `tools/Epimeteo.SmokeClient --lento` en vez
+  del cliente Godot manual — cubre exactamente los mismos pasos hablando el protocolo real
+  contra el servidor real y Postgres real. Godot queda pendiente de probar cuando se abra un
+  editor gráfico (fuera de alcance en un servidor de producción sin sesión de escritorio).
+- Puertos 80, 443, 8080 y 8443 **confirmado ocupados** por otros servicios en este servidor:
+  80/443 → `nginx`, 8080 → `uvicorn`, 8443 → `node`. El juego sigue en loopback `5100`/`5101`
+  como estaba previsto (`CLAUDE.md §2`), sin conflicto. Pendiente de decidir en la Fase 5 cómo
+  cuelga el subdominio del juego del proxy existente sin tocar los otros tres servicios.
 
 ## Hecho en la Fase 1
 
@@ -57,12 +68,10 @@ Detalle completo y verificación en `docs/fases/FASE-01-esqueleto.md`.
 - **Dos soluciones**: la de la raíz y `client/Epimeteo.Client.sln` para Godot.
 - Frames de texto y frames > 16 KB cierran la conexión, igual que los opcodes fuera de estado.
 
-## Hecho en la Fase 2 (hasta ahora, sin verificar contra Postgres real)
+## Hecho en la Fase 2 — CERRADA
 
-Detalle completo del diseño en `docs/fases/FASE-02-persistencia.md`. Código escrito y compila,
-`dotnet build`/`dotnet test` en verde, pero **nunca se ha ejecutado contra una base de datos
-real** porque esta sesión no tiene `sudo` con TTY para instalar PostgreSQL (ver bloque
-"Entorno" más abajo).
+Detalle completo del diseño en `docs/fases/FASE-02-persistencia.md`. Código escrito en sesiones
+anteriores; en esta sesión se verificó de punta a punta contra Postgres real en producción.
 
 - `db/migrations/0001_init.sql`: las cinco tablas de `docs/02-esquema-bd.md`
   (`accounts`, `account_sessions`, `login_attempts`, `characters`, `item_instances`).
@@ -80,34 +89,49 @@ real** porque esta sesión no tiene `sudo` con TTY para instalar PostgreSQL (ver
   `ConnectScreen` transiciona a `Login` tras el `HelloAck` en vez de quedarse mostrando RTT.
 - `tests/Epimeteo.Server.Tests/` (proyecto nuevo): `PasswordHasherTests` (6 tests, corren
   siempre, en verde). `AccountRepositoryTests` y `LoginAttemptRepositoryTests` (7 tests) usan
-  `PostgresFactAttribute` — se **saltan** si `ConnectionStrings:Epimeteo` no está configurada;
-  en esta sesión se han saltado siempre porque no hay Postgres instalado.
-- `appsettings.Development.json.example` con plantilla de cadena de conexión (el real,
-  `appsettings.Development.json`, sigue en `.gitignore` y no se ha creado todavía).
+  `PostgresFactAttribute` — se saltan si `ConnectionStrings:Epimeteo` no está configurada; desde
+  esta sesión hay Postgres real y `appsettings.Development.json`, así que corren y pasan.
+- `appsettings.Development.json.example` con plantilla de cadena de conexión. El real,
+  `appsettings.Development.json`, creado en esta sesión con la contraseña de desarrollo
+  (sigue en `.gitignore`, no se sube a git).
 
-### Lo que falta para cerrar la Fase 2 (criterio de aceptación en `FASE-02-persistencia.md §12`)
+### Verificación Fase 2 (esta sesión, en el servidor de producción)
 
-1. **Instalar PostgreSQL 16 en local** (`sudo apt install postgresql-16`, crear rol y BD
-   `epimeteo`) — requiere una terminal con TTY del usuario, no esta sesión. Comandos exactos en
-   `docs/fases/FASE-02-persistencia.md §2`.
-2. Crear `server/Epimeteo.Server/appsettings.Development.json` (a partir del `.example`) con la
-   contraseña real.
-3. Arrancar el servidor y comprobar en el log que `MigrationRunner` aplica `0001_init.sql` sin
-   errores.
-4. Correr `dotnet test` de nuevo — los 7 tests que hoy se saltan deben pasar a ejecutarse y
-   pasar en verde contra la BD real.
-5. Probar el flujo completo desde el cliente Godot: registrar cuenta → cerrar → reabrir → login
-   con las mismas credenciales → contraseña incorrecta → `InvalidCredentials` → 6 intentos
-   fallidos seguidos → `RateLimited` en el 6º.
-6. Sólo entonces la Fase 2 se da por cerrada y se pasa a la Fase 3 (personajes).
+Criterio de aceptación completo de `FASE-02-persistencia.md §12`, todo en verde:
+
+1. Postgres 16.14 ya corriendo; `psql` conecta con el rol `epimeteo` (contraseña reseteada esta
+   sesión, ver "Entorno").
+2. Primer arranque de `dotnet run --project server/Epimeteo.Server`: log "1 migraciones
+   aplicadas (o ya al día)", crea `schemaversions` + las 5 tablas de `0001_init.sql`. Segundo
+   arranque (proceso limpio): log "0 migraciones aplicadas (o ya al día)" — confirma
+   idempotencia.
+3–7. Verificado con `tools/Epimeteo.SmokeClient --lento` (no hay Godot en este servidor
+   headless; el SmokeClient habla el protocolo real y cubre exactamente los mismos pasos):
+   registro nuevo → `Ok` + `SessionToken`; login en otra conexión con las mismas credenciales →
+   `Ok`; login con usuario inexistente → `InvalidCredentials`; registro con username repetido →
+   `AccountAlreadyExists`; 6 logins fallidos seguidos → `RateLimited` en el 6º. 18/18
+   comprobaciones del SmokeClient en verde (incluye además todo lo heredado de la Fase 1:
+   handshake, versión incorrecta, opcode fuera de estado, frame grande, frame de texto, timeout
+   sin `Hello`).
+8. `dotnet test`: **16/16 compartidos + 13/13 servidor**, 0 saltados (antes se saltaban 7 por
+   falta de Postgres).
+
+Confirmado también en la BD tras la corrida: `accounts` y `login_attempts` con filas reales
+creadas por el SmokeClient, y en el log del servidor las líneas `Sesión N autenticada como
+cuenta M` correspondientes.
+
+Godot en sí (la parte visual del criterio §12.3) no se probó con el editor porque este servidor
+no tiene entorno gráfico — pendiente de una sesión con acceso a Godot si se quiere el visto
+bueno manual además del automático.
 
 ## Siguiente sesión
 
-**Seguir en la Fase 2 — Persistencia y autenticación (Sonnet).** El diseño y el código ya están
-escritos (ver arriba); lo único que falta es la parte de infraestructura que necesita `sudo` con
-TTY (instalar Postgres) y la verificación end-to-end contra una BD real. Si el servidor de
-producción ya tiene Postgres accesible, esta fase podría terminar de verificarse ahí en vez de
-en local — a decidir con el usuario al empezar la sesión.
+**Empezar la Fase 3** (ver `docs/03-roadmap-fases.md` y crear/leer
+`docs/fases/FASE-03-*.md` si ya existe) — la Fase 2 está cerrada. Recordar: este servidor de
+producción ya tiene `dotnet`, Postgres y el rol `epimeteo` listos; no hace falta repetir la
+instalación en próximas sesiones aquí. La contraseña de desarrollo vive sólo en
+`server/Epimeteo.Server/appsettings.Development.json` (gitignored) — si se pierde, se resetea
+con `sudo -u postgres psql -c "ALTER ROLE epimeteo WITH PASSWORD '...';"`.
 
 ### Comandos útiles
 
@@ -115,11 +139,5 @@ en local — a decidir con el usuario al empezar la sesión.
 dotnet build Epimeteo.sln && dotnet test
 dotnet run --project server/Epimeteo.Server
 dotnet run --project tools/Epimeteo.SmokeClient -- --lento
-~/godot/godot --path client            # editor; F5 arranca la pantalla de conexión
-
-# Pendiente de ejecutar (requiere sudo con TTY, ver docs/fases/FASE-02-persistencia.md §2):
-sudo apt install -y postgresql-16
-sudo systemctl enable --now postgresql
-sudo -u postgres createuser -P epimeteo
-sudo -u postgres createdb -O epimeteo epimeteo
+~/godot/godot --path client            # editor; F5 arranca la pantalla de conexión (no probado en este servidor headless)
 ```
