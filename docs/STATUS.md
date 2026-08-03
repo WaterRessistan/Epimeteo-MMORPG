@@ -1,20 +1,20 @@
 # STATUS — Epimeteo MMORPG
 
-**Última actualización:** 2026-08-03 · **Fase actual:** 2 CERRADA (persistencia y autenticación) → arranca Fase 3
+**Última actualización:** 2026-08-03 · **Fase actual:** 3 CERRADA (personajes) → arranca Fase 4
 
 ## Estado
 
 | Área | Estado |
 |---|---|
 | Diseño y arquitectura | ✅ Cerrado (`docs/00`, `01`, `02`, `03`) |
-| Repositorio git | ✅ Fases 0 y 1 commiteadas; Fase 2 commiteada, verificada en producción en esta sesión |
+| Repositorio git | ✅ Fases 0, 1 y 2 commiteadas; Fase 3 lista para commitear |
 | Solución .NET | ✅ `Epimeteo.sln` (Shared + Server + Server.Tests + Shared.Tests + tools) |
-| Protocolo | ✅ Envelope, opcodes, tabla de estados, códec MessagePack; + `Login`/`Register`/`AuthResult` tipados |
-| Servidor | ✅ Kestrel 5100/5101, sesiones, rate limit, tick 20 Hz, `/status`; + migraciones DbUp al arrancar, `AuthService` (Login/Register) en el hilo de red |
-| Cliente Godot | ✅ Conecta, handshake, Ping 1 Hz, RTT; + pantallas `Login`/`Register`, transición desde `Connect` (no probado con editor Godot en esta sesión — servidor de producción es headless, ver "Verificación Fase 2") |
-| Tests | ✅ 16/16 compartidos + **13/13 servidor en verde** (los 7 que dependían de Postgres ya no se saltan) |
-| Base de datos | ✅ **Postgres 16.14 instalado y verificado**, migración `0001_init.sql` aplicada, 5 tablas + `schemaversions` creadas |
-| Contenido (`content/`) | ❌ |
+| Protocolo | ✅ Envelope, opcodes, tabla de estados, códec MessagePack; auth + los 5 opcodes de personaje (`CharList*`, `CharCreate`, `CharDelete`, `CharSelect`, `WorldReady`/`WorldEnter`) tipados |
+| Servidor | ✅ Kestrel 5100/5101, sesiones, rate limit, tick 20 Hz, `/status`, migraciones DbUp, auth; + `CharacterService`/`CharacterRepository`, `ClassCatalog` (carga `content/classes/*.json` al arrancar), transición `Authenticated → Loading → InWorld` |
+| Cliente Godot | ✅ Conecta, handshake, login/registro; + `CharacterSelect` (crear/borrar/entrar, 5 slots) y `WorldPlaceholder` tras `WorldEnter` (no probado con editor Godot en esta sesión — servidor de producción es headless, ver "Verificación Fase 3") |
+| Tests | ✅ 16/16 compartidos + **23/23 servidor en verde** (0 saltados) |
+| Base de datos | ✅ Postgres 16.14; `0001_init.sql` + `0002_character_name_format.sql` aplicadas |
+| Contenido (`content/`) | ✅ `content/classes/{warrior,mage,hybrid}.json` (primer uso de la carpeta) |
 | Despliegue | ❌ |
 
 ## Entorno
@@ -124,14 +124,69 @@ Godot en sí (la parte visual del criterio §12.3) no se probó con el editor po
 no tiene entorno gráfico — pendiente de una sesión con acceso a Godot si se quiere el visto
 bueno manual además del automático.
 
+## Hecho en la Fase 3 — CERRADA
+
+Plan completo en `docs/fases/FASE-03-personajes.md` (escrito y verificado en esta misma sesión,
+justo después de cerrar la Fase 2).
+
+- `content/classes/{warrior,mage,hybrid}.json`: primer contenido versionado del repo, stats
+  base provisionales (los reajusta la Fase 10).
+- `db/migrations/0002_character_name_format.sql`: `CHECK` de longitud en `characters.name`,
+  pareja del `username_format` de `accounts` que se había quedado suelto en la Fase 2.
+- `shared/Epimeteo.Shared/Net/Messages/`: los 5 mensajes C2S (`CharListRequest`, `CharCreate`,
+  `CharDelete`, `CharSelect`, `WorldReady`) y sus S2C (`CharList`, `CharCreateResult`,
+  `CharDeleteResult`, `WorldEnter`) más los tipos compartidos `CharacterSummary`/`CharacterStats`.
+  Sin opcodes nuevos: los 9 ya estaban reservados desde la Fase 1.
+- `server/Epimeteo.Server/Content/`: `ClassCatalog` (carga `content/classes/*.json` una vez al
+  arrancar, como `MigrationRunner`), `ContentPaths` (localiza `content/` subiendo desde
+  `AppContext.BaseDirectory` hasta `Epimeteo.sln` — no sirve tal cual para un `publish` de un
+  solo fichero, pendiente en la Fase 5).
+- `server/Epimeteo.Server/Persistence/Characters/`: `CharacterRepository` (Dapper, distingue
+  `SlotOccupied`/`NameTaken` por el nombre del índice único que salta), `CharacterService`
+  (valida y orquesta, mismo rol que `AuthService`).
+- `SessionMessageHandler` gana los 5 casos, resueltos en el hilo de red (familia `Character`, no
+  toca el tick). Decisión tomada al implementar: `CharSelect` a un personaje inexistente/ajeno
+  no tiene opcode de fallo dedicado en el protocolo cerrado (sólo `WorldEnter` en éxito) — se
+  trata como un dato imposible con un cliente honesto y se resuelve con `Kick`, igual que
+  cualquier otra violación de protocolo, en vez de inventar un mensaje nuevo.
+- `client/`: `CharacterSelect.tscn`/`CharacterSelectScreen.cs` (5 slots, crear/borrar con
+  confirmación/entrar), `WorldPlaceholder.tscn`/`WorldPlaceholderScreen.cs` (placeholder tras
+  `WorldEnter`, manda `WorldReady`). La "apariencia" es sólo un índice de paleta 0–3 (rectángulo
+  de color): los assets siguen en placeholder, no se generó ni descargó arte.
+- `tests/Epimeteo.Server.Tests/`: `CharacterRepositoryTests` (5, contra Postgres real) y
+  `ClassCatalogTests` (5, sin Postgres).
+
+### Verificación Fase 3 (esta sesión, en el servidor de producción)
+
+Criterio de aceptación de `FASE-03-personajes.md §9`, todo en verde:
+
+- `dotnet test`: **16/16 compartidos + 23/23 servidor**, 0 saltados.
+- `tools/Epimeteo.SmokeClient --lento` (ampliado esta sesión con el flujo de personajes; sigue
+  sin haber Godot en este servidor headless): registro → lista vacía → crear en slot vacío →
+  nombre repetido → `NameTaken` → slot ocupado → `SlotOccupied` → `CharSelect` → `WorldEnter`
+  con el mapa y stats de guerrero → `WorldReady` sin caer la sesión (`Ping` sigue respondiendo)
+  → borrar sin confirmar (no borra) → borrar confirmado → slot liberado admite personaje nuevo
+  → cerrar conexión, reabrir con login, el personaje sigue ahí. **33/33 comprobaciones en verde**
+  (incluye todo lo heredado de las Fases 1 y 2).
+- Detalle de infraestructura encontrado al verificar: el cupo de 5 intentos/minuto por IP
+  (Fase 2) es compartido por todo el `SmokeClient`, que ya lo agota a propósito en la prueba de
+  `RateLimitDeLogin`; las pruebas de personajes necesitan `Register`/`Login` reales después, así
+  que el SmokeClient espera 65 s a que la ventana se libere antes de esa sección. Alarga la
+  ejecución pero no es un problema del servidor, es la ventana deslizante funcionando como debía.
+
 ## Siguiente sesión
 
-**Empezar la Fase 3** (ver `docs/03-roadmap-fases.md` y crear/leer
-`docs/fases/FASE-03-*.md` si ya existe) — la Fase 2 está cerrada. Recordar: este servidor de
-producción ya tiene `dotnet`, Postgres y el rol `epimeteo` listos; no hace falta repetir la
-instalación en próximas sesiones aquí. La contraseña de desarrollo vive sólo en
-`server/Epimeteo.Server/appsettings.Development.json` (gitignored) — si se pierde, se resetea
-con `sudo -u postgres psql -c "ALTER ROLE epimeteo WITH PASSWORD '...';"`.
+**Empezar la Fase 4 — Mundo y movimiento autoritativo (Opus).** Ver `docs/03-roadmap-fases.md`;
+escribir primero `docs/fases/FASE-04-*.md` con el plan antes de implementar (regla de
+`docs/03-roadmap-fases.md § Cómo abrir cada sesión`). Es la fase más importante del proyecto:
+predicción, reconciliación, interpolación y AOI. `MyEntityId` en `S2CWorldEnter` hoy vale
+`CharacterId` como valor provisional (Fase 3) — la Fase 4 puede darle un espacio de IDs propio
+sin que nada dependa de que sea así.
+
+Recordatorio de entorno: este servidor de producción ya tiene `dotnet`, Postgres y el rol
+`epimeteo` listos; no hace falta repetir la instalación en próximas sesiones aquí. La contraseña
+de desarrollo vive sólo en `server/Epimeteo.Server/appsettings.Development.json` (gitignored) —
+si se pierde, se resetea con `sudo -u postgres psql -c "ALTER ROLE epimeteo WITH PASSWORD '...';"`.
 
 ### Comandos útiles
 

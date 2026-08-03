@@ -68,6 +68,9 @@ public sealed class Session
     /// <summary>Cuenta autenticada. 0 hasta que <c>Login</c>/<c>Register</c> tienen éxito.</summary>
     public long AccountId { get; internal set; }
 
+    /// <summary>Personaje elegido. 0 hasta que <c>CharSelect</c> tiene éxito.</summary>
+    public long CharacterId { get; internal set; }
+
     /// <summary>Rate limiter por familia de opcode. Sólo lo usa el bucle de lectura.</summary>
     internal SessionRateLimiter RateLimiter { get; } = new();
 

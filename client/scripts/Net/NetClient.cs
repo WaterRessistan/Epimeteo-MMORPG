@@ -40,6 +40,18 @@ public partial class NetClient : Node
     /// <summary>Se dispara al recibir la respuesta de <c>Login</c> o <c>Register</c>.</summary>
     public event Action<S2CAuthResult>? AuthResultReceived;
 
+    /// <summary>Se dispara al recibir la lista de personajes de la cuenta.</summary>
+    public event Action<S2CCharList>? CharListReceived;
+
+    /// <summary>Se dispara al recibir la respuesta de <c>CharCreate</c>.</summary>
+    public event Action<S2CCharCreateResult>? CharCreateResultReceived;
+
+    /// <summary>Se dispara al recibir la respuesta de <c>CharDelete</c>.</summary>
+    public event Action<S2CCharDeleteResult>? CharDeleteResultReceived;
+
+    /// <summary>Se dispara al recibir <c>WorldEnter</c> tras un <c>CharSelect</c> con éxito.</summary>
+    public event Action<S2CWorldEnter>? WorldEnterReceived;
+
     /// <summary>Estado actual de la conexión.</summary>
     public ConnectionStatus Status { get; private set; } = ConnectionStatus.Disconnected;
 
@@ -57,6 +69,13 @@ public partial class NetClient : Node
 
     /// <summary>Token de sesión en claro recibido en el último <c>AuthResult</c> con éxito.</summary>
     public string? SessionToken { get; private set; }
+
+    /// <summary>
+    /// Último <c>WorldEnter</c> recibido. <see cref="Godot.SceneTree.ChangeSceneToFile"/> no pasa
+    /// datos entre escenas; la pantalla siguiente lo lee aquí en su <c>_Ready</c> porque
+    /// <see cref="NetClient"/> es autoload y sobrevive al cambio.
+    /// </summary>
+    public S2CWorldEnter? LastWorldEnter { get; private set; }
 
     /// <summary>Abre la conexión. Si ya había una, se descarta.</summary>
     public void ConnectTo(string url)
@@ -127,6 +146,33 @@ public partial class NetClient : Node
     /// <summary>Manda <c>Register</c>. Sólo válido con la sesión en estado <c>Greeted</c>.</summary>
     public void Register(string username, string? email, string password) =>
         Send(Opcode.Register, new C2SRegister { Username = username, Email = email, Password = password });
+
+    /// <summary>Pide la lista de personajes de la cuenta. Sólo válido en <c>Authenticated</c>.</summary>
+    public void RequestCharList() => Send(Opcode.CharListRequest, new C2SCharListRequest());
+
+    /// <summary>Manda <c>CharCreate</c>. Sólo válido en <c>Authenticated</c>.</summary>
+    public void CreateCharacter(string name, string classKey, int slot, byte paletteIndex) => Send(
+        Opcode.CharCreate,
+        new C2SCharCreate { Name = name, ClassKey = classKey, Slot = slot, PaletteIndex = paletteIndex });
+
+    /// <summary>Manda <c>CharDelete</c>. Sólo válido en <c>Authenticated</c>.</summary>
+    public void DeleteCharacter(long characterId, bool confirm) =>
+        Send(Opcode.CharDelete, new C2SCharDelete { CharacterId = characterId, Confirm = confirm });
+
+    /// <summary>Manda <c>CharSelect</c>. Sólo válido en <c>Authenticated</c>.</summary>
+    public void SelectCharacter(long characterId) =>
+        Send(Opcode.CharSelect, new C2SCharSelect { CharacterId = characterId });
+
+    /// <summary>
+    /// Manda <c>WorldReady</c> y adelanta el estado local a <see cref="SessionState.InWorld"/>:
+    /// no hay confirmación del servidor para este mensaje (docs/01-protocolo.md), así que el
+    /// cliente no tiene nada que esperar antes de considerarse dentro del mundo.
+    /// </summary>
+    public void SendWorldReady()
+    {
+        Send(Opcode.WorldReady, new C2SWorldReady());
+        _state = SessionState.InWorld;
+    }
 
     private void SendHello()
     {
@@ -207,6 +253,40 @@ public partial class NetClient : Node
                     }
 
                     AuthResultReceived?.Invoke(auth);
+                }
+
+                break;
+
+            case Opcode.CharList:
+                if (FrameCodec.TryDecodePayload<S2CCharList>(frame, out var charList) && charList is not null)
+                {
+                    CharListReceived?.Invoke(charList);
+                }
+
+                break;
+
+            case Opcode.CharCreateResult:
+                if (FrameCodec.TryDecodePayload<S2CCharCreateResult>(frame, out var createResult) && createResult is not null)
+                {
+                    CharCreateResultReceived?.Invoke(createResult);
+                }
+
+                break;
+
+            case Opcode.CharDeleteResult:
+                if (FrameCodec.TryDecodePayload<S2CCharDeleteResult>(frame, out var deleteResult) && deleteResult is not null)
+                {
+                    CharDeleteResultReceived?.Invoke(deleteResult);
+                }
+
+                break;
+
+            case Opcode.WorldEnter:
+                if (FrameCodec.TryDecodePayload<S2CWorldEnter>(frame, out var worldEnter) && worldEnter is not null)
+                {
+                    _state = SessionState.Loading;
+                    LastWorldEnter = worldEnter;
+                    WorldEnterReceived?.Invoke(worldEnter);
                 }
 
                 break;

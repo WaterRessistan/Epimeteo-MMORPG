@@ -1,0 +1,10 @@
+{
+  "key": "class.mage",
+  "displayName": "Mago",
+  "baseStr": 2,
+  "baseInt": 8,
+  "baseVit": 3,
+  "baseDex": 5,
+  "baseHp": 70,
+  "baseMp": 100
+}

@@ -1,7 +1,9 @@
 using Epimeteo.Server;
+using Epimeteo.Server.Content;
 using Epimeteo.Server.Net;
 using Epimeteo.Server.Persistence;
 using Epimeteo.Server.Persistence.Accounts;
+using Epimeteo.Server.Persistence.Characters;
 using Epimeteo.Server.World;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Time;
@@ -43,6 +45,9 @@ try
     builder.Services.AddSingleton<LoginAttemptRepository>();
     builder.Services.AddSingleton<SessionTokenService>();
     builder.Services.AddSingleton<AuthService>();
+    builder.Services.AddSingleton(new ClassCatalog(ContentPaths.ResolveContentRoot()));
+    builder.Services.AddSingleton<CharacterRepository>();
+    builder.Services.AddSingleton<CharacterService>();
     builder.Services.AddSingleton<WorldInbox>();
     builder.Services.AddSingleton<IWorldInbox>(sp => sp.GetRequiredService<WorldInbox>());
     builder.Services.AddSingleton<SessionMessageHandler>();

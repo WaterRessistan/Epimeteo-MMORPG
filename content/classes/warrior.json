@@ -1,0 +1,10 @@
+{
+  "key": "class.warrior",
+  "displayName": "Guerrero",
+  "baseStr": 8,
+  "baseInt": 2,
+  "baseVit": 6,
+  "baseDex": 4,
+  "baseHp": 120,
+  "baseMp": 20
+}

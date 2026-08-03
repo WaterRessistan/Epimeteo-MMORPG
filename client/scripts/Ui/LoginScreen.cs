@@ -56,9 +56,7 @@ public partial class LoginScreen : Control
 
         if (result.Ok)
         {
-            // Selección de personaje llega en la Fase 3; por ahora basta con confirmar la cuenta.
-            _messageLabel.Modulate = Colors.PaleGreen;
-            _messageLabel.Text = $"Autenticado. Cuenta #{result.AccountId} (selección de personaje en la Fase 3)";
+            GetTree().ChangeSceneToFile("res://scenes/CharacterSelect.tscn");
             return;
         }
 

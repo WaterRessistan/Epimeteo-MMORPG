@@ -30,6 +30,17 @@ internal static class Program
         await RegistroDuplicado(url);
         await RateLimitDeLogin(url);
 
+        // Las pruebas de arriba ya consumen los 5 intentos/minuto por IP a propósito (la última
+        // los agota del todo). Las de personajes de abajo necesitan Register/Login reales sin
+        // RateLimited de por medio, así que se espera a que la ventana deslizante de un minuto
+        // quede libre otra vez antes de arrancarlas.
+        Console.WriteLine("\n  ...esperando 65 s a que se libere el cupo de 5 intentos/minuto por IP");
+        await Task.Delay(TimeSpan.FromSeconds(65));
+
+        await PersonajesFlujoCompleto(url);
+        await BorradoDePersonaje(url);
+        await PersonajesPersistenEntreConexiones(url);
+
         if (args.Contains("--lento"))
         {
             await SinSaludar(url);
@@ -206,6 +217,126 @@ internal static class Program
         Check("Tras varios intentos fallidos en <1 min → RateLimited", last is { Ok: false, Code: ResultCode.RateLimited });
     }
 
+    /// <summary>
+    /// Fase 3: registro → lista vacía → crear (con choques de nombre/slot) → seleccionar →
+    /// <c>WorldEnter</c> → <c>WorldReady</c> sin que la sesión se caiga. Equivalente automático
+    /// del criterio de aceptación de FASE-03-personajes.md §9 (no hay Godot en este servidor).
+    /// </summary>
+    private static async Task PersonajesFlujoCompleto(string url)
+    {
+        var username = $"smoke_{Guid.NewGuid():N}"[..20];
+
+        using var ws = await Open(url);
+        await Greet(ws);
+        var register = await Auth(ws, Opcode.Register,
+            new C2SRegister { Username = username, Email = null, Password = "clave-de-prueba-123" });
+        Check("Fase 3: registro para el flujo de personajes → Ok", register is { Ok: true });
+
+        var emptyList = await SendReceive<C2SCharListRequest, S2CCharList>(
+            ws, Opcode.CharListRequest, new C2SCharListRequest(), Opcode.CharList);
+        Check("CharList inicial → 0 personajes", emptyList is { Characters.Length: 0 });
+
+        var name = $"Heroe_{Guid.NewGuid():N}"[..12];
+        var create = await SendReceive<C2SCharCreate, S2CCharCreateResult>(
+            ws, Opcode.CharCreate,
+            new C2SCharCreate { Name = name, ClassKey = "class.warrior", Slot = 0, PaletteIndex = 1 },
+            Opcode.CharCreateResult);
+        Check("CharCreate en slot vacío → Ok", create is { Ok: true } && create.Character is { Slot: 0, ClassKey: "class.warrior" });
+
+        var dupName = await SendReceive<C2SCharCreate, S2CCharCreateResult>(
+            ws, Opcode.CharCreate,
+            new C2SCharCreate { Name = name, ClassKey = "class.mage", Slot = 1, PaletteIndex = 0 },
+            Opcode.CharCreateResult);
+        Check("CharCreate con nombre repetido → NameTaken", dupName is { Ok: false, Code: ResultCode.NameTaken });
+
+        var slotTaken = await SendReceive<C2SCharCreate, S2CCharCreateResult>(
+            ws, Opcode.CharCreate,
+            new C2SCharCreate { Name = $"Otro_{Guid.NewGuid():N}"[..10], ClassKey = "class.mage", Slot = 0, PaletteIndex = 0 },
+            Opcode.CharCreateResult);
+        Check("CharCreate en slot ya ocupado → SlotOccupied", slotTaken is { Ok: false, Code: ResultCode.SlotOccupied });
+
+        var listAfterCreate = await SendReceive<C2SCharListRequest, S2CCharList>(
+            ws, Opcode.CharListRequest, new C2SCharListRequest(), Opcode.CharList);
+        Check("CharList tras crear → 1 personaje", listAfterCreate is { Characters.Length: 1 });
+
+        var characterId = create?.Character?.Id ?? 0;
+        var worldEnter = await SendReceive<C2SCharSelect, S2CWorldEnter>(
+            ws, Opcode.CharSelect, new C2SCharSelect { CharacterId = characterId }, Opcode.WorldEnter);
+        Check("CharSelect → WorldEnter con el mapa inicial y stats de guerrero",
+            worldEnter is { MapKey: "map.village" } && worldEnter.Stats.Level == 1 && worldEnter.Stats.Hp == 120);
+
+        await Send(ws, Opcode.WorldReady, new C2SWorldReady());
+        await Send(ws, Opcode.Ping, new C2SPing { ClientTimeMs = ServerClock.NowMs });
+        var (pongOpcode, _) = await Receive(ws);
+        Check("WorldReady no cierra la sesión (Ping sigue respondiendo tras InWorld)", pongOpcode == Opcode.Pong);
+    }
+
+    /// <summary>Confirma, y libera, y vuelve a admitir un personaje en el mismo slot.</summary>
+    private static async Task BorradoDePersonaje(string url)
+    {
+        var username = $"smoke_{Guid.NewGuid():N}"[..20];
+
+        using var ws = await Open(url);
+        await Greet(ws);
+        await Auth(ws, Opcode.Register, new C2SRegister { Username = username, Email = null, Password = "clave-de-prueba-123" });
+
+        var name = $"Borrable_{Guid.NewGuid():N}"[..12];
+        var create = await SendReceive<C2SCharCreate, S2CCharCreateResult>(
+            ws, Opcode.CharCreate,
+            new C2SCharCreate { Name = name, ClassKey = "class.hybrid", Slot = 3, PaletteIndex = 2 },
+            Opcode.CharCreateResult);
+        Check("Personaje creado para probar el borrado", create is { Ok: true });
+
+        var characterId = create?.Character?.Id ?? 0;
+        var deleteWithoutConfirm = await SendReceive<C2SCharDelete, S2CCharDeleteResult>(
+            ws, Opcode.CharDelete, new C2SCharDelete { CharacterId = characterId, Confirm = false }, Opcode.CharDeleteResult);
+        Check("CharDelete sin confirmar → no borra", deleteWithoutConfirm is { Ok: false });
+
+        var delete = await SendReceive<C2SCharDelete, S2CCharDeleteResult>(
+            ws, Opcode.CharDelete, new C2SCharDelete { CharacterId = characterId, Confirm = true }, Opcode.CharDeleteResult);
+        Check("CharDelete confirmado → Ok", delete is { Ok: true });
+
+        var listAfterDelete = await SendReceive<C2SCharListRequest, S2CCharList>(
+            ws, Opcode.CharListRequest, new C2SCharListRequest(), Opcode.CharList);
+        Check("Slot liberado tras borrar → 0 personajes", listAfterDelete is { Characters.Length: 0 });
+
+        var recreate = await SendReceive<C2SCharCreate, S2CCharCreateResult>(
+            ws, Opcode.CharCreate,
+            new C2SCharCreate { Name = $"Nuevo_{Guid.NewGuid():N}"[..10], ClassKey = "class.hybrid", Slot = 3, PaletteIndex = 0 },
+            Opcode.CharCreateResult);
+        Check("El slot liberado admite un personaje nuevo", recreate is { Ok: true });
+    }
+
+    /// <summary>Cerrar la conexión, reabrir y entrar con las mismas credenciales: el personaje sigue ahí.</summary>
+    private static async Task PersonajesPersistenEntreConexiones(string url)
+    {
+        var username = $"smoke_{Guid.NewGuid():N}"[..20];
+        var name = $"Persist_{Guid.NewGuid():N}"[..12];
+
+        using (var ws = await Open(url))
+        {
+            await Greet(ws);
+            await Auth(ws, Opcode.Register, new C2SRegister { Username = username, Email = null, Password = "clave-de-prueba-123" });
+
+            var create = await SendReceive<C2SCharCreate, S2CCharCreateResult>(
+                ws, Opcode.CharCreate,
+                new C2SCharCreate { Name = name, ClassKey = "class.warrior", Slot = 4, PaletteIndex = 3 },
+                Opcode.CharCreateResult);
+            Check("Personaje creado antes de cerrar la conexión", create is { Ok: true });
+        }
+
+        using (var ws2 = await Open(url))
+        {
+            await Greet(ws2);
+            var login = await Auth(ws2, Opcode.Login, new C2SLogin { Username = username, Password = "clave-de-prueba-123" });
+            Check("Login tras reabrir la conexión → Ok", login is { Ok: true });
+
+            var list = await SendReceive<C2SCharListRequest, S2CCharList>(
+                ws2, Opcode.CharListRequest, new C2SCharListRequest(), Opcode.CharList);
+            Check("El personaje sigue ahí tras reconectar", list is { Characters.Length: 1 } && list.Characters[0].Name == name);
+        }
+    }
+
     private static async Task Greet(ClientWebSocket ws)
     {
         await Send(ws, Opcode.Hello, new C2SHello { ProtocolVersion = ProtocolVersion.Current, ClientBuild = "smoke" });
@@ -223,6 +354,21 @@ internal static class Program
         }
 
         return FrameCodec.TryDecodePayload<S2CAuthResult>(frame, out var result) ? result : null;
+    }
+
+    /// <summary>Manda <typeparamref name="TReq"/> y decodifica la respuesta si llega con el opcode esperado.</summary>
+    private static async Task<TResp?> SendReceive<TReq, TResp>(
+        ClientWebSocket ws, Opcode requestOpcode, TReq payload, Opcode expectedResponseOpcode)
+    {
+        await Send(ws, requestOpcode, payload);
+        var (responseOpcode, frame) = await Receive(ws);
+
+        if (responseOpcode != expectedResponseOpcode)
+        {
+            return default;
+        }
+
+        return FrameCodec.TryDecodePayload<TResp>(frame, out var result) ? result : default;
     }
 
     /// <summary>

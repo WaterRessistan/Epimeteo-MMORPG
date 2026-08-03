@@ -1,0 +1,10 @@
+{
+  "key": "class.hybrid",
+  "displayName": "Híbrido",
+  "baseStr": 5,
+  "baseInt": 5,
+  "baseVit": 5,
+  "baseDex": 5,
+  "baseHp": 95,
+  "baseMp": 60
+}

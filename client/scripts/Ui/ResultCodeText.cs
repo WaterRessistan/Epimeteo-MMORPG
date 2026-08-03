@@ -19,6 +19,9 @@ public static class ResultCodeText
         ResultCode.NameTaken => "Ese nombre ya está en uso",
         ResultCode.NameInvalid => "Usuario o email no válidos",
         ResultCode.PasswordInvalid => "La contraseña debe tener entre 8 y 72 caracteres",
+        ResultCode.SlotOccupied => "Ese hueco ya tiene un personaje",
+        ResultCode.NoCharacterSlots => "No hay huecos de personaje disponibles",
+        ResultCode.CharacterNotFound => "Ese personaje no existe",
         _ => $"Error inesperado ({code})",
     };
 

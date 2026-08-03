@@ -66,8 +66,7 @@ public partial class RegisterScreen : Control
 
         if (result.Ok)
         {
-            _messageLabel.Modulate = Colors.PaleGreen;
-            _messageLabel.Text = $"Cuenta creada. Cuenta #{result.AccountId} (selección de personaje en la Fase 3)";
+            GetTree().ChangeSceneToFile("res://scenes/CharacterSelect.tscn");
             return;
         }
 

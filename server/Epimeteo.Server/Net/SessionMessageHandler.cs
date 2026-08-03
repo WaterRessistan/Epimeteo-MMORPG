@@ -1,4 +1,5 @@
 using Epimeteo.Server.Persistence.Accounts;
+using Epimeteo.Server.Persistence.Characters;
 using Epimeteo.Server.World;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Net.Messages;
@@ -16,9 +17,9 @@ namespace Epimeteo.Server.Net;
 /// falsearían el RTT. Todo lo que sí toque el mundo irá a <see cref="IWorldInbox"/>.
 /// </para>
 /// <para>
-/// <c>Login</c> y <c>Register</c> también se resuelven aquí (tocan Postgres, no el tick), pero
-/// awaited: la sesión no procesa el siguiente frame hasta que la BD responde. No bloquea otras
-/// sesiones, que tienen su propio bucle de lectura.
+/// <c>Login</c>, <c>Register</c> y los cinco opcodes de personaje también se resuelven aquí
+/// (tocan Postgres, no el tick), pero awaited: la sesión no procesa el siguiente frame hasta que
+/// la BD responde. No bloquea otras sesiones, que tienen su propio bucle de lectura.
 /// </para>
 /// </summary>
 public sealed class SessionMessageHandler
@@ -26,13 +27,15 @@ public sealed class SessionMessageHandler
     private readonly ServerOptions _options;
     private readonly IWorldInbox _worldInbox;
     private readonly AuthService _auth;
+    private readonly CharacterService _characters;
     private readonly ILogger _log = Log.ForContext<SessionMessageHandler>();
 
-    public SessionMessageHandler(ServerOptions options, IWorldInbox worldInbox, AuthService auth)
+    public SessionMessageHandler(ServerOptions options, IWorldInbox worldInbox, AuthService auth, CharacterService characters)
     {
         _options = options;
         _worldInbox = worldInbox;
         _auth = auth;
+        _characters = characters;
     }
 
     /// <summary>Procesa un frame entrante. Llamado sólo desde el bucle de lectura de la sesión.</summary>
@@ -53,6 +56,22 @@ public sealed class SessionMessageHandler
 
             case Opcode.Register:
                 return HandleRegisterAsync(session, frame);
+
+            case Opcode.CharListRequest:
+                return HandleCharListRequestAsync(session);
+
+            case Opcode.CharCreate:
+                return HandleCharCreateAsync(session, frame);
+
+            case Opcode.CharDelete:
+                return HandleCharDeleteAsync(session, frame);
+
+            case Opcode.CharSelect:
+                return HandleCharSelectAsync(session, frame);
+
+            case Opcode.WorldReady:
+                HandleWorldReady(session, frame);
+                return Task.CompletedTask;
 
             default:
                 HandleUnrouted(session, opcode, frame);
@@ -162,6 +181,124 @@ public sealed class SessionMessageHandler
             .ConfigureAwait(false);
 
         SendAuthResult(session, outcome);
+    }
+
+    private async Task HandleCharListRequestAsync(Session session)
+    {
+        var list = await _characters.ListAsync(session.AccountId).ConfigureAwait(false);
+        session.Send(Opcode.CharList, new S2CCharList { Characters = list });
+    }
+
+    private async Task HandleCharCreateAsync(Session session, ReadOnlyMemory<byte> frame)
+    {
+        if (!FrameCodec.TryDecodePayload<C2SCharCreate>(frame, out var create) || create is null)
+        {
+            _log.Warning("CharCreate ilegible en la sesión {SessionId}", session.Id);
+            session.Kick(KickReason.ProtocolError);
+            return;
+        }
+
+        var outcome = await _characters
+            .CreateAsync(session.AccountId, create.Name, create.ClassKey, create.Slot, create.PaletteIndex)
+            .ConfigureAwait(false);
+
+        session.Send(Opcode.CharCreateResult, new S2CCharCreateResult
+        {
+            Ok = outcome.Ok,
+            Code = outcome.Code,
+            Character = outcome.Summary,
+        });
+    }
+
+    private async Task HandleCharDeleteAsync(Session session, ReadOnlyMemory<byte> frame)
+    {
+        if (!FrameCodec.TryDecodePayload<C2SCharDelete>(frame, out var delete) || delete is null)
+        {
+            _log.Warning("CharDelete ilegible en la sesión {SessionId}", session.Id);
+            session.Kick(KickReason.ProtocolError);
+            return;
+        }
+
+        var outcome = await _characters
+            .DeleteAsync(session.AccountId, delete.CharacterId, delete.Confirm)
+            .ConfigureAwait(false);
+
+        session.Send(Opcode.CharDeleteResult, new S2CCharDeleteResult
+        {
+            Ok = outcome.Ok,
+            Code = outcome.Code,
+            CharacterId = delete.CharacterId,
+        });
+    }
+
+    /// <summary>
+    /// A diferencia de <c>CharCreate</c>/<c>CharDelete</c>, <c>CharSelect</c> no tiene un opcode
+    /// de fallo dedicado (docs/01-protocolo.md): el diseño da por hecho que el cliente sólo
+    /// selecciona personajes que ya le llegaron en su propio <c>CharList</c>. Un fallo aquí sólo
+    /// lo produce una condición de carrera (borrado desde otra sesión) o un cliente manipulado;
+    /// se trata igual que cualquier otro dato imposible con un cliente honesto — Kick, no un
+    /// mensaje en banda nuevo que el protocolo cerrado no declaró.
+    /// </summary>
+    private async Task HandleCharSelectAsync(Session session, ReadOnlyMemory<byte> frame)
+    {
+        if (!FrameCodec.TryDecodePayload<C2SCharSelect>(frame, out var select) || select is null)
+        {
+            _log.Warning("CharSelect ilegible en la sesión {SessionId}", session.Id);
+            session.Kick(KickReason.ProtocolError);
+            return;
+        }
+
+        var outcome = await _characters.SelectAsync(session.AccountId, select.CharacterId).ConfigureAwait(false);
+        if (!outcome.Ok || outcome.Character is null)
+        {
+            _log.Warning("CharSelect a personaje {CharacterId} inexistente/ajeno en la sesión {SessionId}",
+                select.CharacterId, session.Id);
+            session.Kick(KickReason.ProtocolError, outcome.Code);
+            return;
+        }
+
+        var character = outcome.Character;
+        session.CharacterId = character.Id;
+        session.State = SessionState.Loading;
+
+        session.Send(Opcode.WorldEnter, new S2CWorldEnter
+        {
+            MapKey = character.MapKey,
+            SpawnX = character.PosX,
+            SpawnY = character.PosY,
+            Facing = character.Facing,
+            MyEntityId = character.Id,
+            Stats = new CharacterStats
+            {
+                Level = character.Level,
+                Xp = character.Xp,
+                Str = character.StatStr,
+                Int = character.StatInt,
+                Vit = character.StatVit,
+                Dex = character.StatDex,
+                StatPoints = character.StatPoints,
+                Hp = character.Hp,
+                Mp = character.Mp,
+                Gold = character.Gold,
+            },
+            ServerTimeMs = ServerClock.NowMs,
+        });
+
+        _log.Information("Sesión {SessionId} entra con el personaje {CharacterId} ({Name}) en {MapKey}",
+            session.Id, character.Id, character.Name, character.MapKey);
+    }
+
+    private void HandleWorldReady(Session session, ReadOnlyMemory<byte> frame)
+    {
+        if (!FrameCodec.TryDecodePayload<C2SWorldReady>(frame, out _))
+        {
+            _log.Warning("WorldReady ilegible en la sesión {SessionId}", session.Id);
+            session.Kick(KickReason.ProtocolError);
+            return;
+        }
+
+        session.State = SessionState.InWorld;
+        _log.Information("Sesión {SessionId} en el mundo con el personaje {CharacterId}", session.Id, session.CharacterId);
     }
 
     private void SendAuthResult(Session session, AuthOutcome outcome)
