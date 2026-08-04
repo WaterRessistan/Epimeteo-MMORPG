@@ -296,9 +296,9 @@ lleguen los sprites, se cambia el renderer sin tocar la predicción.
 |---|---|
 | `scripts/World/WorldScreen.cs` | Orquesta: carga el mapa, compara `MapHash`, engancha los eventos de `NetClient`, mantiene el registro de entidades. |
 | `scripts/World/LocalPlayer.cs` | Acumulador de 50 ms, lee input, llama a `MovementSystem.Step`, guarda en el buffer y manda `InputState`. |
-| `scripts/World/PredictionBuffer.cs` | Anillo de 64 entradas `(seq, input, estadoResultante)`. 64 × 50 ms = 3.2 s de historial: cubre cualquier RTT jugable. |
-| `scripts/World/Reconciler.cs` | Descarta hasta `lastAckedInputSeq`; si el error supera 0.05 tiles, coloca el estado autoritativo y **reejecuta** los inputs pendientes con el mismo `MovementSystem`. |
-| `scripts/World/RemoteEntity.cs` | Buffer de muestras `(serverTick, pos, facing, anim)` e interpolación a `renderTime = ahora − 100 ms`. Si el buffer se queda seco, mantiene la última pose (no extrapola: prefiero que se pare a que patine y salte hacia atrás). |
+| ~~`scripts/World/PredictionBuffer.cs`~~ | **No existe.** Al implementar se vio que era `Shared/Simulation/ClientPrediction.cs`, que ya lo hace y es lo que ejecuta el `WorldBot`. |
+| ~~`scripts/World/Reconciler.cs`~~ | **No existe**, por lo mismo: está dentro de `ClientPrediction`. Tenerlo dos veces habría significado verificar una copia y jugar con otra. |
+| `scripts/World/RemoteEntity.cs` | Identidad de la entidad. El buffer de muestras y la interpolación acabaron en `Shared/Simulation/EntityInterpolator.cs`, y el reloj de render en `InterpolationClock.cs`: era la única pieza de netcode que quedaba dentro del proyecto de Godot, es decir, la única imposible de probar en un servidor headless. Ahí tienen tests. |
 | `scripts/World/WorldRenderer.cs` | `_Draw` de la rejilla y las entidades, con Y-sort por `pos.Y`. |
 | `scripts/World/WorldCamera.cs` | Sigue al jugador local, se limita a los bordes del mapa, posición redondeada a píxel entero (si no, el pixel art tiembla). |
 | `scripts/Ui/WorldHud.cs` | Posición, RTT, región actual + aviso "ZONA HOSTIL", y contador de correcciones/error máximo — el HUD **es** el instrumento de aceptación. |

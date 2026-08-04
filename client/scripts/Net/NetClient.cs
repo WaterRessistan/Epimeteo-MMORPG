@@ -1,6 +1,7 @@
 using System;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Net.Messages;
+using Epimeteo.Shared.Simulation;
 using Epimeteo.Shared.Time;
 using Godot;
 
@@ -24,6 +25,8 @@ public partial class NetClient : Node
     private const double RttSmoothing = 0.25;
 
     private readonly WebSocketPeer _peer = new();
+    private NetLagSimulator _inboundLag = new(0);
+    private NetLagSimulator _outboundLag = new(0);
     private SessionState _state = SessionState.None;
     private double _pingTimer;
     private bool _connectRequested;
@@ -52,6 +55,18 @@ public partial class NetClient : Node
     /// <summary>Se dispara al recibir <c>WorldEnter</c> tras un <c>CharSelect</c> con éxito.</summary>
     public event Action<S2CWorldEnter>? WorldEnterReceived;
 
+    /// <summary>Se dispara con cada <c>Snapshot</c>: el estado autoritativo de lo que se ve.</summary>
+    public event Action<S2CSnapshot>? SnapshotReceived;
+
+    /// <summary>Se dispara cuando entran entidades en el área de interés.</summary>
+    public event Action<S2CEntitySpawn>? EntitySpawnReceived;
+
+    /// <summary>Se dispara cuando salen entidades del área de interés (o mueren, o se van).</summary>
+    public event Action<S2CEntityDespawn>? EntityDespawnReceived;
+
+    /// <summary>Se dispara al cruzar de región, con los flags que decide el servidor.</summary>
+    public event Action<S2CZoneFlagsUpdate>? ZoneFlagsUpdateReceived;
+
     /// <summary>Estado actual de la conexión.</summary>
     public ConnectionStatus Status { get; private set; } = ConnectionStatus.Disconnected;
 
@@ -76,6 +91,29 @@ public partial class NetClient : Node
     /// <see cref="NetClient"/> es autoload y sobrevive al cambio.
     /// </summary>
     public S2CWorldEnter? LastWorldEnter { get; private set; }
+
+    /// <summary>
+    /// Personaje con el que se entró al mundo. <c>WorldEnter</c> no trae el nombre ni la paleta
+    /// —el servidor da por hecho que el cliente ya los tiene de la lista de personajes— así que se
+    /// guardan aquí al elegirlo, para que la escena de mundo pueda dibujarse a sí misma.
+    /// </summary>
+    public CharacterSummary? SelectedCharacter { get; private set; }
+
+    /// <summary>Latencia simulada por sentido, en ms. 0 si no se pidió ninguna.</summary>
+    public int SimulatedLagMs => _inboundLag.LagMs;
+
+    /// <inheritdoc />
+    public override void _Ready()
+    {
+        var lagMs = NetLagSimulator.ReadConfiguredLagMs();
+        _inboundLag = new NetLagSimulator(lagMs);
+        _outboundLag = new NetLagSimulator(lagMs);
+
+        if (lagMs > 0)
+        {
+            GD.Print($"Simulador de latencia activo: {lagMs} ms por sentido ({lagMs * 2} ms de RTT).");
+        }
+    }
 
     /// <summary>Abre la conexión. Si ya había una, se descarta.</summary>
     public void ConnectTo(string url)
@@ -107,6 +145,8 @@ public partial class NetClient : Node
             _peer.Close();
         }
 
+        _inboundLag.Clear();
+        _outboundLag.Clear();
         _connectRequested = false;
         _state = SessionState.None;
     }
@@ -131,6 +171,7 @@ public partial class NetClient : Node
 
                 PumpIncoming();
                 TickPing(delta);
+                FlushOutbound();
                 break;
 
             case WebSocketPeer.State.Closed:
@@ -160,8 +201,12 @@ public partial class NetClient : Node
         Send(Opcode.CharDelete, new C2SCharDelete { CharacterId = characterId, Confirm = confirm });
 
     /// <summary>Manda <c>CharSelect</c>. Sólo válido en <c>Authenticated</c>.</summary>
-    public void SelectCharacter(long characterId) =>
-        Send(Opcode.CharSelect, new C2SCharSelect { CharacterId = characterId });
+    /// <param name="character">El personaje elegido, tal como venía en la lista.</param>
+    public void SelectCharacter(CharacterSummary character)
+    {
+        SelectedCharacter = character;
+        Send(Opcode.CharSelect, new C2SCharSelect { CharacterId = character.Id });
+    }
 
     /// <summary>
     /// Manda <c>WorldReady</c> y adelanta el estado local a <see cref="SessionState.InWorld"/>:
@@ -204,11 +249,34 @@ public partial class NetClient : Node
         Send(Opcode.Ping, new C2SPing { ClientTimeMs = ServerClock.NowMs });
     }
 
+    /// <summary>
+    /// Manda la intención de movimiento de un tick. Es lo <b>único</b> que el cliente dice sobre
+    /// su posición: nunca manda dónde está, sólo hacia dónde quiere ir (CLAUDE.md §4).
+    /// </summary>
+    public void SendInput(in MoveInput input) => Send(Opcode.InputState, new C2SInputState
+    {
+        Seq = input.Seq,
+        DirX = input.DirX,
+        DirY = input.DirY,
+        Facing = input.Facing,
+        Flags = 0,
+
+        // El servidor no lo integra desde la Fase 4 (paso fijo, FASE-04 §2 D1); viaja sólo para
+        // que pueda diagnosticar el jitter del cliente.
+        DtMs = SimulationConstants.TickDtMs,
+    });
+
     private void PumpIncoming()
     {
+        var now = ServerClock.NowMs;
+
         while (_peer.GetAvailablePacketCount() > 0)
         {
-            var frame = _peer.GetPacket();
+            _inboundLag.Push(_peer.GetPacket(), now);
+        }
+
+        while (_inboundLag.TryPop(now, out var frame))
+        {
             if (!FrameCodec.TryReadOpcode(frame, out var opcode))
             {
                 GD.PushWarning($"Frame de {frame.Length} B sin cabecera; descartado.");
@@ -216,6 +284,21 @@ public partial class NetClient : Node
             }
 
             Dispatch(opcode, frame);
+        }
+    }
+
+    /// <summary>Suelta los frames que ya han cumplido su retardo de salida.</summary>
+    private void FlushOutbound()
+    {
+        var now = ServerClock.NowMs;
+
+        while (_outboundLag.TryPop(now, out var frame))
+        {
+            var error = _peer.Send(frame, WebSocketPeer.WriteMode.Binary);
+            if (error != Error.Ok)
+            {
+                GD.PushError($"Error al enviar un frame de {frame.Length} B: {error}");
+            }
         }
     }
 
@@ -291,6 +374,38 @@ public partial class NetClient : Node
 
                 break;
 
+            case Opcode.Snapshot:
+                if (FrameCodec.TryDecodePayload<S2CSnapshot>(frame, out var snapshot) && snapshot is not null)
+                {
+                    SnapshotReceived?.Invoke(snapshot);
+                }
+
+                break;
+
+            case Opcode.EntitySpawn:
+                if (FrameCodec.TryDecodePayload<S2CEntitySpawn>(frame, out var spawn) && spawn is not null)
+                {
+                    EntitySpawnReceived?.Invoke(spawn);
+                }
+
+                break;
+
+            case Opcode.EntityDespawn:
+                if (FrameCodec.TryDecodePayload<S2CEntityDespawn>(frame, out var despawn) && despawn is not null)
+                {
+                    EntityDespawnReceived?.Invoke(despawn);
+                }
+
+                break;
+
+            case Opcode.ZoneFlagsUpdate:
+                if (FrameCodec.TryDecodePayload<S2CZoneFlagsUpdate>(frame, out var zone) && zone is not null)
+                {
+                    ZoneFlagsUpdateReceived?.Invoke(zone);
+                }
+
+                break;
+
             case Opcode.Kick:
                 if (FrameCodec.TryDecodePayload<S2CKick>(frame, out var kick) && kick is not null)
                 {
@@ -333,13 +448,14 @@ public partial class NetClient : Node
         }
     }
 
+    /// <summary>
+    /// Encola un mensaje. Con el simulador de latencia apagado sale en esta misma llamada, porque
+    /// el frame vence de inmediato; con él encendido espera su turno en <see cref="FlushOutbound"/>.
+    /// </summary>
     private void Send<T>(Opcode opcode, T payload)
     {
-        var error = _peer.Send(FrameCodec.Encode(opcode, payload), WebSocketPeer.WriteMode.Binary);
-        if (error != Error.Ok)
-        {
-            GD.PushError($"Error al enviar {opcode}: {error}");
-        }
+        _outboundLag.Push(FrameCodec.Encode(opcode, payload), ServerClock.NowMs);
+        FlushOutbound();
     }
 
     private void SetStatus(ConnectionStatus status)

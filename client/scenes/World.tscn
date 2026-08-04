@@ -1,0 +1,61 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/World/WorldScreen.cs" id="1_world"]
+[ext_resource type="Script" path="res://scripts/World/WorldRenderer.cs" id="2_renderer"]
+[ext_resource type="Script" path="res://scripts/World/WorldCamera.cs" id="3_camera"]
+[ext_resource type="Script" path="res://scripts/Ui/WorldHud.cs" id="4_hud"]
+
+[node name="World" type="Node2D"]
+script = ExtResource("1_world")
+
+[node name="Renderer" type="Node2D" parent="."]
+script = ExtResource("2_renderer")
+
+[node name="Camera" type="Camera2D" parent="."]
+script = ExtResource("3_camera")
+
+[node name="Hud" type="CanvasLayer" parent="."]
+
+[node name="WorldHud" type="Control" parent="Hud"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("4_hud")
+
+[node name="Panel" type="PanelContainer" parent="Hud/WorldHud"]
+layout_mode = 1
+anchors_preset = 0
+offset_left = 4.0
+offset_top = 4.0
+offset_right = 210.0
+offset_bottom = 54.0
+mouse_filter = 2
+
+[node name="Lines" type="VBoxContainer" parent="Hud/WorldHud/Panel"]
+layout_mode = 2
+mouse_filter = 2
+theme_override_constants/separation = 0
+
+[node name="Position" type="Label" parent="Hud/WorldHud/Panel/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 8
+text = "(0.00, 0.00)"
+
+[node name="Network" type="Label" parent="Hud/WorldHud/Panel/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 8
+text = "RTT —"
+
+[node name="Region" type="Label" parent="Hud/WorldHud/Panel/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 8
+text = "sin región"
+
+[node name="Prediction" type="Label" parent="Hud/WorldHud/Panel/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 8
+text = "corr 0 · err máx 0.000 t · pend 0"

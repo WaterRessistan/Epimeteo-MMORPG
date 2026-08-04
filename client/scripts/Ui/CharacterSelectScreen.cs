@@ -136,7 +136,7 @@ public partial class CharacterSelectScreen : Control
         else
         {
             var enter = new Button { Text = "Entrar" };
-            enter.Pressed += () => _net.SelectCharacter(character.Id);
+            enter.Pressed += () => _net.SelectCharacter(character);
             row.AddChild(enter);
 
             var delete = new Button { Text = "Borrar" };
@@ -220,7 +220,7 @@ public partial class CharacterSelectScreen : Control
         _messageLabel.Text = ResultCodeText.Describe(result.Code);
     }
 
-    private void OnWorldEnter(S2CWorldEnter enter) => GetTree().ChangeSceneToFile("res://scenes/WorldPlaceholder.tscn");
+    private void OnWorldEnter(S2CWorldEnter enter) => GetTree().ChangeSceneToFile("res://scenes/World.tscn");
 
     private void OnKicked(KickReason reason, ResultCode detail, int serverProtocolVersion)
     {

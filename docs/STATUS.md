@@ -1,7 +1,7 @@
 # STATUS — Epimeteo MMORPG
 
-**Última actualización:** 2026-08-04 · **Fase actual:** 4 CERRADA en servidor (mundo y movimiento) →
-arranca Fase 5, con el cliente Godot de la Fase 4 pendiente de una sesión con entorno gráfico
+**Última actualización:** 2026-08-04 · **Fase actual:** 4 COMPLETA (mundo y movimiento) →
+arranca Fase 5. El cliente Godot está escrito y compila; falta verlo correr en un editor Godot
 
 ## Estado
 
@@ -12,8 +12,8 @@ arranca Fase 5, con el cliente Godot de la Fase 4 pendiente de una sesión con e
 | Solución .NET | ✅ `Epimeteo.sln` (Shared + Server + Server.Tests + Shared.Tests + tools) |
 | Protocolo | ✅ **Versión 2**. Envelope, opcodes, tabla de estados, códec MessagePack; auth, los 5 opcodes de personaje y los de mundo (`InputState`, `EntitySpawn`, `EntityDespawn`, `Snapshot`, `ZoneFlagsUpdate`) tipados |
 | Servidor | ✅ Lo anterior + **el tick simula de verdad**: `Zone` con entidades, colas de input, `CellGrid`/`AoiSystem`, `SnapshotBuilder`, `MapCatalog` y guardado de posición fuera del tick |
-| Cliente Godot | ⚠️ Conecta, handshake, login/registro, `CharacterSelect` y `WorldPlaceholder`. **La escena de mundo de la Fase 4 (predicción, reconciliación, interpolación, cámara, HUD) NO está escrita**: no hay Godot en este servidor headless y el plan (`FASE-04 §12`) contempla cerrar ahí |
-| Tests | ✅ **68/68 compartidos + 58/58 servidor en verde** (0 saltados) |
+| Cliente Godot | ⚠️ Conecta, handshake, login/registro, `CharacterSelect` y **`World.tscn`** (predicción, reconciliación, interpolación, cámara, HUD, simulador de latencia). Compila sin warnings, pero **no se ha ejecutado nunca**: no hay Godot en este servidor headless |
+| Tests | ✅ **84/84 compartidos + 58/58 servidor en verde** (0 saltados) |
 | Base de datos | ✅ Postgres 16.14; `0001_init.sql` + `0002_character_name_format.sql` aplicadas |
 | Contenido (`content/`) | ✅ `content/classes/*.json` + `content/maps/map.village.json` (96×96, colisión y regiones) |
 | Despliegue | ❌ |
@@ -232,20 +232,63 @@ Criterio de aceptación de `FASE-04 §13`:
 6. ✅ `SIGINT` al servidor con 2 jugadores dentro y moviéndose: log `Cola de posiciones cerrada
    tras 16 guardados`, y en la BD las dos posiciones del instante del apagado (56.38 y 59.63),
    no el spawn.
-7. ⏳ Godot: no hay entorno gráfico en este servidor. **Pendiente.**
+7. ⏳ Godot: el cliente está escrito y compila (`dotnet build client/Epimeteo.Client.csproj`, 0
+   warnings), pero **no se ha ejecutado**: este servidor no tiene entorno gráfico. Es lo único
+   de la fase que queda por ver funcionando.
+
+## Hecho en la Fase 4 — cliente Godot (punto 8 de §12)
+
+- `client/scripts/World/`: `WorldScreen` (orquesta, compara `MapHash`, reparte los mensajes),
+  `LocalPlayer` (acumulador de 50 ms → `ClientPrediction` → `InputState`), `RemoteEntity`,
+  `WorldRenderer` (`_Draw`, tiles y rectángulos, Y-sort por `pos.Y`), `WorldCamera`,
+  `ClientContent` (localiza `content/` fuera del proyecto), `InputActions`.
+- `client/scripts/Ui/WorldHud.cs`: posición, RTT, región con aviso de ZONA HOSTIL y contador de
+  correcciones/error máximo. Sin arte, **el HUD es el instrumento de aceptación** de la fase.
+- `client/scripts/Net/`: `NetClient` gana los cuatro eventos de mundo y `SendInput`;
+  `NetLagSimulator` (`--lag-ms=150` o `EPIMETEO_LAG_MS`) retiene frames en los dos sentidos.
+- `client/scenes/World.tscn` nueva; `WorldPlaceholder.tscn` y su script, borrados.
+- `client/project.godot`: acciones `move_*` con WASD y flechas. Los códigos de tecla se
+  comprobaron contra `GodotSharp 4.5.1` por reflexión, no de memoria: un keycode mal puesto no da
+  error de compilación, simplemente el personaje no anda.
+
+### Desviaciones respecto al plan de la fase (§7), a propósito
+
+- **No existen `PredictionBuffer.cs` ni `Reconciler.cs`.** Esa lógica ya estaba en
+  `Shared/Simulation/ClientPrediction.cs`, que es lo que ejecuta el `WorldBot`. Duplicarla en el
+  proyecto de Godot habría significado verificar una copia y jugar con otra.
+- **La interpolación y su reloj se movieron a `Shared`** (`EntityInterpolator`,
+  `InterpolationClock`) por el mismo motivo, y ahí sí tienen tests (16 nuevos). Eran la única
+  pieza de netcode que quedaba dentro del proyecto de Godot, es decir, la única que no se podía
+  comprobar en este servidor. Ahora en `client/scripts/World/RemoteEntity.cs` sólo queda la
+  traducción entre los mensajes de red y esa pieza.
+
+### Fallo corregido al escribir el cliente
+
+El acumulador de pasos vaciaba todo el tiempo pendiente de golpe. Tras un alt-tab o un parón del
+sistema eso son decenas de `InputState` en un frame, y el presupuesto del servidor (20/s con
+ráfaga de 6) lo lee como intento de correr más de la cuenta: **un jugador honesto acababa
+expulsado por minimizar el juego**. Ahora se dan como mucho 2 pasos por frame y el resto del
+desfase se descarta, que es la misma decisión que tomó el servidor en la Fase 1 con su bucle.
 
 ## Siguiente sesión
 
-Dos cosas pendientes, en este orden:
+**Fase 5 — Despliegue mínimo · Sonnet.** Es la siguiente en `docs/03-roadmap-fases.md`. Ojo con
+tres cosas que ya se sabe que muerden:
 
-1. **Cliente Godot de la Fase 4** (punto 8 de `FASE-04 §12`), en una sesión con entorno gráfico:
-   `World.tscn`, `LocalPlayer`, `PredictionBuffer`, `Reconciler`, `RemoteEntity`, `WorldRenderer`,
-   `WorldCamera`, `WorldHud`; borrar `WorldPlaceholder`. El netcode que envuelven ya está escrito
-   y verificado en `Shared`, así que es sobre todo pegamento y dibujo. Modelo: Opus mientras se
-   toque predicción/reconciliación.
-2. **Fase 5 — despliegue** (Sonnet). Ojo con dos cosas que ya se sabe que muerden: `ContentPaths`
-   no sirve para un `publish` de un solo fichero (heredado de la Fase 3), y hay que decidir cómo
-   cuelga el subdominio del proxy existente sin tocar nginx/uvicorn/node (ver "Entorno").
+1. `ContentPaths` no sirve para un `publish` de un solo fichero (heredado de la Fase 3), y ahora
+   también hay un `ClientContent` en el cliente con el mismo problema al exportar desde Godot.
+   El `MapHash` convierte el fallo en un error ruidoso en vez de un desync silencioso, pero hay
+   que empaquetar `content/` de verdad.
+2. Hay que decidir cómo cuelga el subdominio del proxy existente sin tocar nginx/uvicorn/node
+   (ver "Entorno").
+3. `Epimeteo:LoginAttemptsPerMinute` está a 5 por defecto y cuenta por IP: detrás de un proxy
+   inverso hay que pasar la IP real del cliente o **todo el mundo compartirá el mismo cupo**.
+
+**Pendiente aparte, en cuanto haya una máquina con entorno gráfico:** abrir `client/project.godot`
+en Godot 4.5 y comprobar el punto 7 del criterio de la Fase 4 — dos clientes en el mismo mapa,
+viéndose moverse, movimiento propio inmediato y las paredes parando. El HUD da los números
+(correcciones y error máximo) sin herramientas. Con `--lag-ms=150` se reproduce el caso jugable.
+Es lo único de la Fase 4 que no se ha visto funcionar.
 
 Recordatorio de entorno: este servidor de producción ya tiene `dotnet`, Postgres y el rol
 `epimeteo` listos; no hace falta repetir la instalación en próximas sesiones aquí. La contraseña
