@@ -1,8 +1,11 @@
+using Epimeteo.Server.Content;
 using Epimeteo.Server.Persistence.Accounts;
 using Epimeteo.Server.Persistence.Characters;
 using Epimeteo.Server.World;
+using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Net.Messages;
+using Epimeteo.Shared.Simulation;
 using Epimeteo.Shared.Time;
 using Serilog;
 using ILogger = Serilog.ILogger;
@@ -28,14 +31,27 @@ public sealed class SessionMessageHandler
     private readonly IWorldInbox _worldInbox;
     private readonly AuthService _auth;
     private readonly CharacterService _characters;
+    private readonly ClassCatalog _classes;
+    private readonly MapCatalog _maps;
+    private readonly EntityIdAllocator _entityIds;
     private readonly ILogger _log = Log.ForContext<SessionMessageHandler>();
 
-    public SessionMessageHandler(ServerOptions options, IWorldInbox worldInbox, AuthService auth, CharacterService characters)
+    public SessionMessageHandler(
+        ServerOptions options,
+        IWorldInbox worldInbox,
+        AuthService auth,
+        CharacterService characters,
+        ClassCatalog classes,
+        MapCatalog maps,
+        EntityIdAllocator entityIds)
     {
         _options = options;
         _worldInbox = worldInbox;
         _auth = auth;
         _characters = characters;
+        _classes = classes;
+        _maps = maps;
+        _entityIds = entityIds;
     }
 
     /// <summary>Procesa un frame entrante. Llamado sólo desde el bucle de lectura de la sesión.</summary>
@@ -258,16 +274,45 @@ public sealed class SessionMessageHandler
         }
 
         var character = outcome.Character;
+        var map = ResolveMap(character.MapKey);
+        if (map is null)
+        {
+            _log.Error("El personaje {CharacterId} apunta al mapa {MapKey} y no hay ningún mapa cargado que valga",
+                character.Id, character.MapKey);
+            session.Kick(KickReason.InternalError);
+            return;
+        }
+
+        var spawn = new Vec2(character.PosX, character.PosY);
+        var facing = (Facing)Math.Clamp(character.Facing, 0, 3);
+        var hpMax = _classes.TryGet(character.ClassKey, out var classDef) ? classDef.BaseHp : character.Hp;
+
         session.CharacterId = character.Id;
+        session.EntityId = _entityIds.Next();
         session.State = SessionState.Loading;
+
+        // La entidad no se crea todavía: se materializa en el tick cuando llegue WorldReady. Lo
+        // que se reserva aquí es sólo su id, para poder mandarlo ya en WorldEnter.
+        session.PendingJoin = new WorldJoinRequest(
+            session.EntityId,
+            character.Id,
+            character.Name,
+            character.ClassKey,
+            map.Key,
+            spawn,
+            facing,
+            character.PaletteIndex,
+            character.Hp,
+            hpMax);
 
         session.Send(Opcode.WorldEnter, new S2CWorldEnter
         {
-            MapKey = character.MapKey,
-            SpawnX = character.PosX,
-            SpawnY = character.PosY,
-            Facing = character.Facing,
-            MyEntityId = character.Id,
+            MapKey = map.Key,
+            SpawnX = spawn.X,
+            SpawnY = spawn.Y,
+            Facing = facing,
+            MyEntityId = session.EntityId,
+            MapHash = map.Hash,
             Stats = new CharacterStats
             {
                 Level = character.Level,
@@ -297,8 +342,40 @@ public sealed class SessionMessageHandler
             return;
         }
 
+        if (session.PendingJoin is not { } join)
+        {
+            // Sólo se llega aquí desde Loading, y a Loading sólo se entra por un CharSelect con
+            // éxito, que siempre deja PendingJoin puesto. Si falta, el servidor tiene un bug.
+            _log.Error("WorldReady sin datos de entrada en la sesión {SessionId}", session.Id);
+            session.Kick(KickReason.InternalError);
+            return;
+        }
+
         session.State = SessionState.InWorld;
-        _log.Information("Sesión {SessionId} en el mundo con el personaje {CharacterId}", session.Id, session.CharacterId);
+        session.JoinedWorld = true;
+        session.PendingJoin = null;
+
+        // A partir de aquí manda el hilo del tick: crea la entidad, calcula su AOI y empieza a
+        // mandarle snapshots.
+        _worldInbox.PostControl(new PlayerJoinCommand(session, join));
+
+        _log.Information("Sesión {SessionId} en el mundo con el personaje {CharacterId} (entidad {EntityId})",
+            session.Id, session.CharacterId, session.EntityId);
+    }
+
+    /// <summary>
+    /// Mapa del personaje. Si su <c>map_key</c> ya no existe (contenido reorganizado entre
+    /// sesiones) se cae a <c>map.village</c>: mejor entrar en el pueblo que quedarse fuera.
+    /// </summary>
+    private GameMap? ResolveMap(string mapKey)
+    {
+        if (_maps.TryGet(mapKey, out var map))
+        {
+            return map;
+        }
+
+        _log.Warning("Mapa {MapKey} desconocido; se usa map.village", mapKey);
+        return _maps.TryGet("map.village", out var fallback) ? fallback : null;
     }
 
     private void SendAuthResult(Session session, AuthOutcome outcome)

@@ -25,6 +25,10 @@ Si `protocolVersion` no coincide con la del servidor → `S2C_Kick { reason = Ve
 con la versión esperada, y el cliente muestra "actualiza el juego". `protocolVersion` es un
 `int` que se incrementa a mano cada vez que cambia la forma de un mensaje existente.
 
+**Versión actual: 2** (Fase 4). La 1 fue el handshake y los personajes (Fases 1–3). Cambió porque
+`WorldEnter` ganó `mapHash` y porque `myEntityId` dejó de ser el `characterId` provisional de la
+Fase 3 para pasar a ser el id de entidad real, de un espacio de ids propio del mundo.
+
 ## Máquina de estados de sesión
 
 ```
@@ -83,7 +87,7 @@ log + cierre inmediato. No hay excepciones a esta regla.
 | 0x8010 | `CharList` | lista de resúmenes (id, slot, nombre, clase, nivel, mapa, aspecto, equipo visible) |
 | 0x8011 | `CharCreateResult` | ok, código de error, resumen |
 | 0x8012 | `CharDeleteResult` | ok, código |
-| 0x8013 | `WorldEnter` | mapKey, spawnX, spawnY, myEntityId, stats completos, hora del mundo |
+| 0x8013 | `WorldEnter` | mapKey, **mapHash**, spawnX, spawnY, myEntityId, stats completos, hora del mundo |
 | 0x8020 | `EntitySpawn` | lista de entidades que entran en AOI (id, tipo, defKey, pos, aspecto, nombre, hp/hpMax) |
 | 0x8021 | `EntityDespawn` | lista de ids + motivo (fuera de AOI / muerte / logout) |
 | 0x8022 | `Snapshot` | serverTick, lastAckedInputSeq, array de deltas (id, x, y, vx, vy, facing, animState, flags) |
@@ -142,16 +146,22 @@ Token bucket **por sesión y por familia de opcode**:
 | Acciones de juego (inv, granja, combate) | 20 msg/s, ráfaga 40 |
 | Tienda | 10 msg/s |
 | Chat | 2 msg/s, ráfaga 5 |
-| Login/Register | 5 por minuto **por IP**, no por sesión |
+| Login/Register | 5 por minuto **por IP**, no por sesión (`Epimeteo:LoginAttemptsPerMinute`) |
 
 Superar el límite → `SystemMessage(RateLimited)`. Superarlo 3 veces en 10 s → desconexión.
 
 ## Anti-cheat mínimo desde el día 1
 
-- `dtMs` del input se **clampa** en servidor a `[0, 100]`. El servidor no confía en el reloj del
-  cliente; sólo lo usa para suavizar, y acumula un presupuesto de movimiento por segundo.
-- Presupuesto de distancia: si la suma de desplazamiento en 1 s supera `velocidadMax * 1.15`,
-  se corrige la posición hacia la autoritativa y se cuenta un strike.
+- `dtMs` del input **ya no se integra** (cambiado en la Fase 4, ver `FASE-04 §2 D1`). El input es
+  un comando de paso fijo: un input = un tick = 50 ms exactos, los mismos en cliente y en servidor.
+  El campo sigue viajando —el protocolo está cerrado y el hueco existe— pero el servidor sólo lo
+  registra para diagnosticar jitter. Clamparlo a `[0, 100]`, como decía la versión anterior de este
+  documento, le habría permitido al que miente exactamente el doble de velocidad; con paso fijo el
+  reloj del cliente no entra en la simulación.
+- Presupuesto de inputs: la cola de cada jugador es un cubo de fichas de 20/s con ráfaga de 6. Con
+  paso fijo, "cuántos inputs acepto" y "cuánto puede moverse" son la misma pregunta, así que esto
+  sustituye al presupuesto de distancia en floats. Pasarse descarta el input y suma un strike;
+  insistir cierra la sesión con `Kick(RateLimited)`.
 - Todas las acciones con objetivo validan **distancia** contra la posición **del servidor**.
 - Cooldowns en servidor. El cliente los muestra, pero el servidor los aplica.
 - Ninguna cantidad de oro o ítems llega del cliente como resultado; sólo como *petición*.

@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Net.WebSockets;
 using System.Threading.Channels;
+using Epimeteo.Server.World;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Net.Messages;
 using Epimeteo.Shared.Time;
@@ -19,8 +20,14 @@ namespace Epimeteo.Server.Net;
 /// <c>WebSocket.SendAsync</c> desde fuera del bucle de escritura: no admite envíos concurrentes.
 /// </para>
 /// </summary>
-public sealed class Session
+public sealed class Session : IWorldPeer
 {
+    /// <summary>
+    /// Margen que se le da al cliente, tras mandarle el frame de cierre, para acusarlo y acabar de
+    /// leer lo que ya le habíamos enviado (típicamente el <see cref="S2CKick"/> con el motivo).
+    /// </summary>
+    private const int CloseGraceMs = 2000;
+
     private readonly WebSocket _socket;
     private readonly SessionMessageHandler _handler;
     private readonly Channel<byte[]> _outbound;
@@ -70,6 +77,22 @@ public sealed class Session
 
     /// <summary>Personaje elegido. 0 hasta que <c>CharSelect</c> tiene éxito.</summary>
     public long CharacterId { get; internal set; }
+
+    /// <summary>
+    /// Id de entidad reservado en <c>CharSelect</c> para poder mandarlo en <c>WorldEnter</c>. La
+    /// entidad en sí no existe hasta que el cliente manda <c>WorldReady</c> y el tick procesa el
+    /// <c>join</c>. 0 mientras no se haya elegido personaje.
+    /// </summary>
+    public int EntityId { get; internal set; }
+
+    /// <summary>
+    /// Datos del personaje leídos en <c>CharSelect</c>, a la espera de <c>WorldReady</c>. Se
+    /// guardan aquí para que el hilo del tick no tenga que tocar Postgres (CLAUDE.md §4).
+    /// </summary>
+    internal WorldJoinRequest? PendingJoin { get; set; }
+
+    /// <summary>Verdadero desde que el <c>join</c> se encoló hasta que se encola el <c>leave</c>.</summary>
+    internal bool JoinedWorld { get; set; }
 
     /// <summary>Rate limiter por familia de opcode. Sólo lo usa el bucle de lectura.</summary>
     internal SessionRateLimiter RateLimiter { get; } = new();
@@ -157,7 +180,10 @@ public sealed class Session
         var buffer = ArrayPool<byte>.Shared.Rent(FrameCodec.MaxFrameBytes + 1);
         try
         {
-            while (!token.IsCancellationRequested && _socket.State == WebSocketState.Open)
+            // CloseSent cuenta: tras mandar nuestro frame de cierre hay que seguir leyendo hasta
+            // que el cliente conteste con el suyo. Es la segunda mitad del apretón de manos.
+            while (!token.IsCancellationRequested &&
+                   _socket.State is WebSocketState.Open or WebSocketState.CloseSent)
             {
                 var total = 0;
                 ValueWebSocketReceiveResult result;
@@ -193,12 +219,19 @@ public sealed class Session
                 while (!result.EndOfMessage);
 
                 Interlocked.Exchange(ref _lastInboundMs, ServerClock.NowMs);
-                await HandleFrameAsync(buffer.AsMemory(0, total)).ConfigureAwait(false);
 
+                // Con el cierre en marcha no se atiende nada más, pero se sigue leyendo y
+                // descartando. Si dejásemos de leer mientras el cliente todavía envía —un
+                // tramposo expulsado va justo a 60 inputs/s— la conexión se cortaría de golpe y
+                // el S2CKick recién encolado se perdería antes de que el cliente lo leyera: sería
+                // expulsado sin llegar a saber por qué. Se drena hasta su frame de cierre o hasta
+                // que venza la gracia de SendLoopAsync.
                 if (IsClosing)
                 {
-                    return;
+                    continue;
                 }
+
+                await HandleFrameAsync(buffer.AsMemory(0, total)).ConfigureAwait(false);
             }
         }
         finally
@@ -279,7 +312,11 @@ public sealed class Session
         finally
         {
             await CloseSocketAsync().ConfigureAwait(false);
-            await _lifetime.CancelAsync().ConfigureAwait(false);
+
+            // No se corta la lectura de golpe: se le dan CloseGraceMs al cliente para acusar el
+            // cierre y, de paso, para terminar de leer el S2CKick que acabamos de mandarle. Si no
+            // contesta, el token vence y el bucle de lectura muere igual.
+            _lifetime.CancelAfter(CloseGraceMs);
         }
     }
 

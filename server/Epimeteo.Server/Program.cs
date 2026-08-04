@@ -45,17 +45,27 @@ try
     builder.Services.AddSingleton<LoginAttemptRepository>();
     builder.Services.AddSingleton<SessionTokenService>();
     builder.Services.AddSingleton<AuthService>();
-    builder.Services.AddSingleton(new ClassCatalog(ContentPaths.ResolveContentRoot()));
+    var contentRoot = ContentPaths.ResolveContentRoot();
+    builder.Services.AddSingleton(new ClassCatalog(contentRoot));
+    builder.Services.AddSingleton(new MapCatalog(contentRoot));
     builder.Services.AddSingleton<CharacterRepository>();
     builder.Services.AddSingleton<CharacterService>();
+    builder.Services.AddSingleton<EntityIdAllocator>();
     builder.Services.AddSingleton<WorldInbox>();
     builder.Services.AddSingleton<IWorldInbox>(sp => sp.GetRequiredService<WorldInbox>());
+    builder.Services.AddSingleton<CharacterPositionSaver>();
+    builder.Services.AddSingleton<IPositionSink>(sp => sp.GetRequiredService<CharacterPositionSaver>());
+    builder.Services.AddSingleton<GameWorld>();
     builder.Services.AddSingleton<SessionMessageHandler>();
     builder.Services.AddSingleton<SessionManager>();
     builder.Services.AddSingleton(sp => new GameLoop(
         options.TickRate,
-        sp.GetRequiredService<WorldInbox>(),
+        sp.GetRequiredService<GameWorld>(),
         sp.GetRequiredService<SessionManager>().OnTick));
+
+    // La cola de posiciones arranca antes que el bucle y, por tanto, se para después: así el
+    // vaciado final del apagado todavía tiene quien lo escriba.
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<CharacterPositionSaver>());
     builder.Services.AddHostedService<GameLoopService>();
 
     builder.WebHost.ConfigureKestrel(kestrel =>
@@ -131,13 +141,20 @@ try
         snapshotRate = opts.SnapshotRate,
     }));
 
-    app.MapGet("/status", (SessionManager sessions, GameLoop loop) =>
+    app.MapGet("/status", (SessionManager sessions, GameLoop loop, GameWorld world, CharacterPositionSaver saver) =>
     {
         var stats = loop.Metrics.Snapshot();
         return Results.Json(new
         {
             uptimeMs = ServerClock.NowMs,
             sessions = sessions.Count,
+            world = new
+            {
+                zones = world.Zones.Count,
+                players = world.PlayerCount,
+                entities = world.EntityCount,
+                pendingSaves = saver.PendingCount,
+            },
             tick = new
             {
                 current = loop.CurrentTick,

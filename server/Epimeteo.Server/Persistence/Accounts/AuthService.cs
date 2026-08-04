@@ -13,9 +13,9 @@ public sealed class AuthService(
     AccountRepository accounts,
     LoginAttemptRepository loginAttempts,
     PasswordHasher passwordHasher,
-    SessionTokenService sessionTokens)
+    SessionTokenService sessionTokens,
+    ServerOptions options)
 {
-    private const int MaxAttemptsPerWindow = 5;
     private static readonly TimeSpan AttemptWindow = TimeSpan.FromMinutes(1);
 
     // Verificado cuando la cuenta no existe, para que un login con usuario inexistente tarde lo
@@ -28,7 +28,7 @@ public sealed class AuthService(
     {
         var ip = ParseIp(remoteAddress);
 
-        if (await loginAttempts.CountRecentAsync(ip, AttemptWindow, ct).ConfigureAwait(false) >= MaxAttemptsPerWindow)
+        if (await loginAttempts.CountRecentAsync(ip, AttemptWindow, ct).ConfigureAwait(false) >= options.LoginAttemptsPerMinute)
         {
             // Ni siquiera se comprueba la contraseña: contarla como intento premiaría a quien
             // manda credenciales basura sólo para gastar el cupo de otro.
@@ -68,7 +68,7 @@ public sealed class AuthService(
     {
         var ip = ParseIp(remoteAddress);
 
-        if (await loginAttempts.CountRecentAsync(ip, AttemptWindow, ct).ConfigureAwait(false) >= MaxAttemptsPerWindow)
+        if (await loginAttempts.CountRecentAsync(ip, AttemptWindow, ct).ConfigureAwait(false) >= options.LoginAttemptsPerMinute)
         {
             return AuthOutcome.Fail(ResultCode.RateLimited);
         }

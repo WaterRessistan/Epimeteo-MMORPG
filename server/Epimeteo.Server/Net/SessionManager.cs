@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
+using Epimeteo.Server.World;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Time;
 using Serilog;
@@ -16,13 +17,15 @@ public sealed class SessionManager
     private readonly ConcurrentDictionary<int, Session> _sessions = new();
     private readonly ServerOptions _options;
     private readonly SessionMessageHandler _handler;
+    private readonly IWorldInbox _worldInbox;
     private readonly ILogger _log = Log.ForContext<SessionManager>();
     private int _nextId;
 
-    public SessionManager(ServerOptions options, SessionMessageHandler handler)
+    public SessionManager(ServerOptions options, SessionMessageHandler handler, IWorldInbox worldInbox)
     {
         _options = options;
         _handler = handler;
+        _worldInbox = worldInbox;
     }
 
     /// <summary>Sesiones conectadas ahora mismo.</summary>
@@ -43,6 +46,14 @@ public sealed class SessionManager
     {
         if (_sessions.TryRemove(session.Id, out _))
         {
+            if (session.JoinedWorld)
+            {
+                // El mundo saca la entidad y guarda la posición en su propio hilo; aquí no se
+                // toca ni el mundo ni la BD.
+                session.JoinedWorld = false;
+                _worldInbox.PostControl(new PlayerLeaveCommand(session.Id));
+            }
+
             _log.Debug("Sesión {SessionId} cerrada tras {DuracionMs} ms ({Count} activas)",
                 session.Id, ServerClock.NowMs - session.ConnectedAtMs, _sessions.Count);
         }

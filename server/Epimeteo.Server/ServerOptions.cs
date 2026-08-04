@@ -33,4 +33,12 @@ public sealed class ServerOptions
 
     /// <summary>Sesiones simultáneas admitidas. Conexiones extra se rechazan con 503.</summary>
     public int MaxSessions { get; init; } = 200;
+
+    /// <summary>
+    /// Intentos de login o registro por IP y minuto (<c>docs/01-protocolo.md § Rate limiting</c>).
+    /// Es configurable —no una constante— porque una corrida de <c>tools/Epimeteo.WorldBot</c> con
+    /// diez bots desde loopback necesita más de cinco conexiones por minuto. <b>En producción se
+    /// queda en 5</b>: subirlo abre la puerta a probar contraseñas a ritmo.
+    /// </summary>
+    public int LoginAttemptsPerMinute { get; init; } = 5;
 }

@@ -8,6 +8,13 @@ namespace Epimeteo.Shared.Net;
 /// </summary>
 public static class ProtocolVersion
 {
-    /// <summary>Versión actual del protocolo.</summary>
-    public const int Current = 1;
+    /// <summary>
+    /// Versión actual del protocolo.
+    /// <list type="bullet">
+    /// <item>1 — Fases 1–3: handshake, autenticación y personajes.</item>
+    /// <item>2 — Fase 4: <c>WorldEnter</c> gana <c>MapHash</c> y su <c>MyEntityId</c> pasa a ser
+    /// el id de entidad del mundo (era <c>CharacterId</c> provisional).</item>
+    /// </list>
+    /// </summary>
+    public const int Current = 2;
 }

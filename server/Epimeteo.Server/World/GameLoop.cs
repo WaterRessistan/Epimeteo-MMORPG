@@ -5,9 +5,9 @@ using ILogger = Serilog.ILogger;
 namespace Epimeteo.Server.World;
 
 /// <summary>
-/// Bucle de simulación: un hilo dedicado que despierta a <c>TickRate</c> Hz.
-/// En la Fase 1 gira en vacío salvo por el mantenimiento de sesiones; su razón de existir ahora
-/// es dejar fijados el reloj, la compensación de deriva y la instrumentación.
+/// Bucle de simulación: un hilo dedicado que despierta a <c>TickRate</c> Hz y llama al mundo.
+/// Aquí sólo vive el ritmo —reloj monotónico, compensación de deriva, métricas—; qué se simula es
+/// cosa de <see cref="GameWorld"/>.
 /// <para>
 /// Es un <see cref="Thread"/> y no un <see cref="Task"/> a propósito: no queremos que el
 /// planificador del ThreadPool decida cuándo simula el mundo.
@@ -16,23 +16,23 @@ namespace Epimeteo.Server.World;
 public sealed class GameLoop : IDisposable
 {
     private readonly int _tickIntervalUs;
-    private readonly WorldInbox _inbox;
+    private readonly GameWorld _world;
     private readonly Action<long> _onTick;
     private readonly CancellationTokenSource _cts = new();
     private readonly ILogger _log = Log.ForContext<GameLoop>();
     private Thread? _thread;
 
     /// <param name="tickRate">Ticks por segundo.</param>
-    /// <param name="inbox">Cola de entrada que se drena al principio de cada tick.</param>
+    /// <param name="world">El mundo que se simula en cada tick.</param>
     /// <param name="onTick">
-    /// Trabajo periódico que aún no pertenece a ningún sistema de mundo (barrido de timeouts).
-    /// Recibe el número de tick.
+    /// Trabajo periódico que no pertenece a ningún sistema de mundo (barrido de timeouts de
+    /// sesión). Recibe el número de tick.
     /// </param>
-    public GameLoop(int tickRate, WorldInbox inbox, Action<long> onTick)
+    public GameLoop(int tickRate, GameWorld world, Action<long> onTick)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(tickRate, 1);
         _tickIntervalUs = 1_000_000 / tickRate;
-        _inbox = inbox;
+        _world = world;
         _onTick = onTick;
     }
 
@@ -117,18 +117,11 @@ public sealed class GameLoop : IDisposable
     {
         CurrentTick++;
 
-        // 1. Drenar lo que ha llegado por red desde el tick anterior.
-        while (_inbox.TryDequeue(out var message))
-        {
-            // Sin sistemas de mundo todavía (Fase 4). Si algo llega aquí es un fallo de
-            // enrutado, no un mensaje de un cliente: la tabla de opcodes ya lo habría rechazado.
-            _log.Warning("Mensaje {Opcode} de la sesión {SessionId} sin sistema que lo atienda",
-                message.Opcode, message.SessionId);
-        }
+        // El mundo drena sus colas, simula, recalcula AOI, manda snapshots y encola guardados,
+        // en el orden de docs/00 §4.
+        _world.Tick(CurrentTick);
 
-        // 2. Sistemas de mundo: vacío en la Fase 1.
-
-        // 3. Mantenimiento periódico (timeouts de sesión).
+        // Mantenimiento periódico ajeno al mundo (timeouts de sesión).
         _onTick(CurrentTick);
     }
 }

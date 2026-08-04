@@ -99,6 +99,32 @@ public sealed class CharacterRepository(NpgsqlConnectionFactory connections)
         }
     }
 
+    /// <summary>
+    /// Vuelca la posición autoritativa de un personaje (Fase 4). La llama la cola de persistencia,
+    /// nunca el tick. Actualiza también <c>last_played_at</c>: es el mismo <c>UPDATE</c> y evita
+    /// una segunda escritura sobre la misma fila.
+    /// </summary>
+    public async Task<bool> UpdatePositionAsync(
+        long characterId, string mapKey, float posX, float posY, int facing, CancellationToken ct = default)
+    {
+        await using var connection = await connections.OpenAsync(ct).ConfigureAwait(false);
+        var affected = await connection.ExecuteAsync(
+            new CommandDefinition(
+                """
+                UPDATE characters
+                   SET map_key = @mapKey,
+                       pos_x = @posX,
+                       pos_y = @posY,
+                       facing = @facing,
+                       last_played_at = now()
+                 WHERE id = @characterId AND deleted_at IS NULL
+                """,
+                new { characterId, mapKey, posX, posY, facing = (short)facing },
+                cancellationToken: ct)).ConfigureAwait(false);
+
+        return affected > 0;
+    }
+
     /// <summary>Verdadero si borró una fila; falso si no existía, ya estaba borrada, o no era de <paramref name="accountId"/>.</summary>
     public async Task<bool> SoftDeleteAsync(long characterId, long accountId, CancellationToken ct = default)
     {

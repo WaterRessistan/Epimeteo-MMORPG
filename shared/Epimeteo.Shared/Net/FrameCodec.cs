@@ -66,14 +66,23 @@ public static class FrameCodec
             return false;
         }
 
+        return TryDecodeBody(PayloadOf(frame), out payload);
+    }
+
+    /// <summary>
+    /// Igual que <see cref="TryDecodePayload{T}"/> pero sobre un payload ya separado de su
+    /// cabecera: es lo que guarda la cola del mundo (<c>IWorldInbox</c>), que copia sólo el cuerpo.
+    /// </summary>
+    public static bool TryDecodeBody<T>(ReadOnlyMemory<byte> payload, out T? value)
+    {
         try
         {
-            payload = MessagePackSerializer.Deserialize<T>(PayloadOf(frame), Options);
+            value = MessagePackSerializer.Deserialize<T>(payload, Options);
             return true;
         }
         catch (Exception ex) when (ex is MessagePackSerializationException or EndOfStreamException)
         {
-            payload = default;
+            value = default;
             return false;
         }
     }

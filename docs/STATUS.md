@@ -1,20 +1,21 @@
 # STATUS — Epimeteo MMORPG
 
-**Última actualización:** 2026-08-03 · **Fase actual:** 3 CERRADA (personajes) → arranca Fase 4
+**Última actualización:** 2026-08-04 · **Fase actual:** 4 CERRADA en servidor (mundo y movimiento) →
+arranca Fase 5, con el cliente Godot de la Fase 4 pendiente de una sesión con entorno gráfico
 
 ## Estado
 
 | Área | Estado |
 |---|---|
 | Diseño y arquitectura | ✅ Cerrado (`docs/00`, `01`, `02`, `03`) |
-| Repositorio git | ✅ Fases 0, 1 y 2 commiteadas; Fase 3 lista para commitear |
+| Repositorio git | ✅ Fases 0–3 commiteadas; Fase 4 lista para commitear |
 | Solución .NET | ✅ `Epimeteo.sln` (Shared + Server + Server.Tests + Shared.Tests + tools) |
-| Protocolo | ✅ Envelope, opcodes, tabla de estados, códec MessagePack; auth + los 5 opcodes de personaje (`CharList*`, `CharCreate`, `CharDelete`, `CharSelect`, `WorldReady`/`WorldEnter`) tipados |
-| Servidor | ✅ Kestrel 5100/5101, sesiones, rate limit, tick 20 Hz, `/status`, migraciones DbUp, auth; + `CharacterService`/`CharacterRepository`, `ClassCatalog` (carga `content/classes/*.json` al arrancar), transición `Authenticated → Loading → InWorld` |
-| Cliente Godot | ✅ Conecta, handshake, login/registro; + `CharacterSelect` (crear/borrar/entrar, 5 slots) y `WorldPlaceholder` tras `WorldEnter` (no probado con editor Godot en esta sesión — servidor de producción es headless, ver "Verificación Fase 3") |
-| Tests | ✅ 16/16 compartidos + **23/23 servidor en verde** (0 saltados) |
+| Protocolo | ✅ **Versión 2**. Envelope, opcodes, tabla de estados, códec MessagePack; auth, los 5 opcodes de personaje y los de mundo (`InputState`, `EntitySpawn`, `EntityDespawn`, `Snapshot`, `ZoneFlagsUpdate`) tipados |
+| Servidor | ✅ Lo anterior + **el tick simula de verdad**: `Zone` con entidades, colas de input, `CellGrid`/`AoiSystem`, `SnapshotBuilder`, `MapCatalog` y guardado de posición fuera del tick |
+| Cliente Godot | ⚠️ Conecta, handshake, login/registro, `CharacterSelect` y `WorldPlaceholder`. **La escena de mundo de la Fase 4 (predicción, reconciliación, interpolación, cámara, HUD) NO está escrita**: no hay Godot en este servidor headless y el plan (`FASE-04 §12`) contempla cerrar ahí |
+| Tests | ✅ **68/68 compartidos + 58/58 servidor en verde** (0 saltados) |
 | Base de datos | ✅ Postgres 16.14; `0001_init.sql` + `0002_character_name_format.sql` aplicadas |
-| Contenido (`content/`) | ✅ `content/classes/{warrior,mage,hybrid}.json` (primer uso de la carpeta) |
+| Contenido (`content/`) | ✅ `content/classes/*.json` + `content/maps/map.village.json` (96×96, colisión y regiones) |
 | Despliegue | ❌ |
 
 ## Entorno
@@ -174,14 +175,77 @@ Criterio de aceptación de `FASE-03-personajes.md §9`, todo en verde:
   que el SmokeClient espera 65 s a que la ventana se libere antes de esa sección. Alarga la
   ejecución pero no es un problema del servidor, es la ventana deslizante funcionando como debía.
 
+## Hecho en la Fase 4 — CERRADA en la parte de servidor
+
+Plan completo en `docs/fases/FASE-04-mundo-movimiento.md`. Los puntos 1–7 de su §12 están hechos y
+verificados; el punto 8 (cliente Godot) no, por falta de entorno gráfico — es la salida que el
+propio plan contempla en §12 y §13.7.
+
+- `shared/Epimeteo.Shared/Simulation/`: `MovementSystem` (paso fijo de 50 ms, ejes separados para
+  deslizar por las paredes), `CollisionMap`, `RegionSet`, `AoiGrid`, `ClientPrediction`,
+  `SimulationConstants` y los tipos de valor (`Vec2`, `TilePos`, `Facing`, `ZoneFlags`…). Es el
+  código que ejecutan **literalmente los dos lados**.
+- `shared/Epimeteo.Shared/Data/`: `MapDefinition` + `MapLoader` (valida al cargar y calcula el
+  hash FNV-1a que viaja en `WorldEnter`).
+- `content/maps/map.village.json`: 96×96 (6×6 celdas de AOI), muralla, edificio con esquinas,
+  puerta de un tile y las regiones `plaza` (segura) y `campo_norte` (PvP).
+- `server/Epimeteo.Server/World/`: `Zone`, `WorldEntity`/`PlayerEntity`, `EntityIdAllocator`,
+  `InputQueue` (cubo de fichas 20/s + ráfaga 6), `CellGrid`, `AoiSystem`, `SnapshotBuilder`,
+  `GameWorld`. El tick pasó de estar vacío a simular en el orden de `docs/00 §4`.
+- `Persistence/Characters/CharacterPositionSaver.cs`: cola fuera del tick, guardado escalonado
+  cada 30 s por jugador, prioritario al salir, y vaciado al apagar.
+- Protocolo **v2**: `C2SInputState`, `S2CEntitySpawn`, `S2CEntityDespawn`, `S2CSnapshot`,
+  `S2CZoneFlagsUpdate`; `S2CWorldEnter` gana `MapHash` y `MyEntityId` pasa a ser un id de entidad
+  real. Anotado en `docs/01-protocolo.md`.
+- `tools/Epimeteo.WorldBot`: N clientes de verdad que hablan el protocolo real y ejecutan la misma
+  predicción y reconciliación que ejecutará el cliente Godot. Es lo que sustituye al "abre dos
+  Godot y míralos" en un servidor headless.
+
+### Decisiones y hallazgos de esta sesión
+
+- **`dtMs` deja de integrarse.** El input es un comando de paso fijo (`FASE-04 §2 D1`); el reloj
+  del cliente ya no entra en la simulación. Con el clamp anterior a `[0,100]` que decía `docs/01`,
+  quien mintiera podía ir exactamente al doble de velocidad.
+- **Fallo real encontrado y corregido en `Session`** (no era del bot): el bucle de lectura cortaba
+  en cuanto había un cierre en marcha. Con un cliente que aún estaba enviando —justo el caso de
+  quien es expulsado por inundar de inputs— el servidor dejaba de leer, la conexión se cortaba de
+  golpe y el `S2CKick` ya enviado se perdía antes de que el cliente lo leyera: expulsión sin
+  motivo visible, y sólo a veces. Ahora se sigue drenando (sin despachar) hasta el frame de cierre
+  del cliente o hasta 2 s de gracia. Cubierto por `SessionCloseTests`, que falla sin el arreglo.
+- El cupo de 5 intentos de login por minuto **y por IP** hace que una flota de bots de carga no
+  quepa: sale toda de la misma IP. `Epimeteo:LoginAttemptsPerMinute` ya es configurable; para las
+  corridas de carga se sube en el servidor de pruebas, y el `WorldBot` además espera y reintenta
+  (sosteniendo la sesión con `Ping`, que si no cae por `IdleTimeoutMs`).
+
+### Verificación Fase 4 (esta sesión, contra el servidor y Postgres reales)
+
+Criterio de aceptación de `FASE-04 §13`:
+
+1. ✅ `dotnet build` sin warnings; `dotnet test` **68/68 compartidos + 58/58 servidor**, 0 saltados.
+2. ✅ `WorldBot` con 2 bots y 0 ms de lag: **24/24**, y repetido 3 veces seguidas para descartar
+   que el fallo intermitente del `Kick` siguiera ahí.
+3. ✅ Con `--lag-ms 150`: **24/24**. Cero correcciones de reconciliación en 12 s de movimiento
+   (el criterio pedía menos de una por segundo) y error máximo 0,000 tiles.
+4. ✅ Con `--bots 10`: **28/28**, tick medio **0,09 ms** y 0 overruns en `/status`.
+5. ✅ Se mueve, se desconecta y vuelve donde lo dejó (0,00 tiles de desvío), confirmado además en
+   `psql`: `characters.pos_x/pos_y` = (56.38, 68.30), distinto del spawn (48.50, 60.50).
+6. ✅ `SIGINT` al servidor con 2 jugadores dentro y moviéndose: log `Cola de posiciones cerrada
+   tras 16 guardados`, y en la BD las dos posiciones del instante del apagado (56.38 y 59.63),
+   no el spawn.
+7. ⏳ Godot: no hay entorno gráfico en este servidor. **Pendiente.**
+
 ## Siguiente sesión
 
-**Empezar la Fase 4 — Mundo y movimiento autoritativo (Opus).** Ver `docs/03-roadmap-fases.md`;
-escribir primero `docs/fases/FASE-04-*.md` con el plan antes de implementar (regla de
-`docs/03-roadmap-fases.md § Cómo abrir cada sesión`). Es la fase más importante del proyecto:
-predicción, reconciliación, interpolación y AOI. `MyEntityId` en `S2CWorldEnter` hoy vale
-`CharacterId` como valor provisional (Fase 3) — la Fase 4 puede darle un espacio de IDs propio
-sin que nada dependa de que sea así.
+Dos cosas pendientes, en este orden:
+
+1. **Cliente Godot de la Fase 4** (punto 8 de `FASE-04 §12`), en una sesión con entorno gráfico:
+   `World.tscn`, `LocalPlayer`, `PredictionBuffer`, `Reconciler`, `RemoteEntity`, `WorldRenderer`,
+   `WorldCamera`, `WorldHud`; borrar `WorldPlaceholder`. El netcode que envuelven ya está escrito
+   y verificado en `Shared`, así que es sobre todo pegamento y dibujo. Modelo: Opus mientras se
+   toque predicción/reconciliación.
+2. **Fase 5 — despliegue** (Sonnet). Ojo con dos cosas que ya se sabe que muerden: `ContentPaths`
+   no sirve para un `publish` de un solo fichero (heredado de la Fase 3), y hay que decidir cómo
+   cuelga el subdominio del proxy existente sin tocar nginx/uvicorn/node (ver "Entorno").
 
 Recordatorio de entorno: este servidor de producción ya tiene `dotnet`, Postgres y el rol
 `epimeteo` listos; no hace falta repetir la instalación en próximas sesiones aquí. La contraseña
@@ -194,5 +258,17 @@ si se pierde, se resetea con `sudo -u postgres psql -c "ALTER ROLE epimeteo WITH
 dotnet build Epimeteo.sln && dotnet test
 dotnet run --project server/Epimeteo.Server
 dotnet run --project tools/Epimeteo.SmokeClient -- --lento
-~/godot/godot --path client            # editor; F5 arranca la pantalla de conexión (no probado en este servidor headless)
+
+# El servidor necesita DOTNET_ENVIRONMENT=Development para leer appsettings.Development.json
+DOTNET_ENVIRONMENT=Development dotnet run --project server/Epimeteo.Server
+
+# Netcode: 24 comprobaciones con 2 bots, 28 con carga. Requiere el servidor arriba.
+dotnet run --project tools/Epimeteo.WorldBot
+dotnet run --project tools/Epimeteo.WorldBot -- --lag-ms 150
+
+# Para --bots 10 hay que subirle el cupo de login al servidor de pruebas (todos salen de una IP)
+DOTNET_ENVIRONMENT=Development Epimeteo__LoginAttemptsPerMinute=200 dotnet run --project server/Epimeteo.Server
+dotnet run --project tools/Epimeteo.WorldBot -- --bots 10
+
+~/godot/godot --path client            # editor; no hay Godot en este servidor headless
 ```
