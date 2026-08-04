@@ -1,14 +1,14 @@
 # STATUS — Epimeteo MMORPG
 
-**Última actualización:** 2026-08-04 · **Fase actual:** 4 COMPLETA (mundo y movimiento) →
-arranca Fase 5. El cliente Godot está escrito y compila; falta verlo correr en un editor Godot
+**Última actualización:** 2026-08-04 · **Fase actual:** 5 COMPLETA (despliegue mínimo) →
+arranca Fase 6. El juego está en producción de verdad: `wss://epimeteo.waterressistan.duckdns.org/ws`
 
 ## Estado
 
 | Área | Estado |
 |---|---|
 | Diseño y arquitectura | ✅ Cerrado (`docs/00`, `01`, `02`, `03`) |
-| Repositorio git | ✅ Fases 0–3 commiteadas; Fase 4 lista para commitear |
+| Repositorio git | ✅ Fases 0–4 commiteadas; Fase 5 lista para commitear |
 | Solución .NET | ✅ `Epimeteo.sln` (Shared + Server + Server.Tests + Shared.Tests + tools) |
 | Protocolo | ✅ **Versión 2**. Envelope, opcodes, tabla de estados, códec MessagePack; auth, los 5 opcodes de personaje y los de mundo (`InputState`, `EntitySpawn`, `EntityDespawn`, `Snapshot`, `ZoneFlagsUpdate`) tipados |
 | Servidor | ✅ Lo anterior + **el tick simula de verdad**: `Zone` con entidades, colas de input, `CellGrid`/`AoiSystem`, `SnapshotBuilder`, `MapCatalog` y guardado de posición fuera del tick |
@@ -16,7 +16,7 @@ arranca Fase 5. El cliente Godot está escrito y compila; falta verlo correr en 
 | Tests | ✅ **84/84 compartidos + 58/58 servidor en verde** (0 saltados) |
 | Base de datos | ✅ Postgres 16.14; `0001_init.sql` + `0002_character_name_format.sql` aplicadas |
 | Contenido (`content/`) | ✅ `content/classes/*.json` + `content/maps/map.village.json` (96×96, colisión y regiones) |
-| Despliegue | ❌ |
+| Despliegue | ✅ **En producción**: `epimeteo.service` (systemd, usuario dedicado, `Restart=always`, `ProtectSystem=strict`), nginx + TLS propio en `epimeteo.waterressistan.duckdns.org`, backup diario de Postgres por timer |
 
 ## Entorno
 
@@ -37,8 +37,12 @@ arranca Fase 5. El cliente Godot está escrito y compila; falta verlo correr en 
   editor gráfico (fuera de alcance en un servidor de producción sin sesión de escritorio).
 - Puertos 80, 443, 8080 y 8443 **confirmado ocupados** por otros servicios en este servidor:
   80/443 → `nginx`, 8080 → `uvicorn`, 8443 → `node`. El juego sigue en loopback `5100`/`5101`
-  como estaba previsto (`CLAUDE.md §2`), sin conflicto. Pendiente de decidir en la Fase 5 cómo
-  cuelga el subdominio del juego del proxy existente sin tocar los otros tres servicios.
+  como estaba previsto (`CLAUDE.md §2`), sin conflicto.
+- **Este servidor de producción es el mismo desde la Fase 2.** No hay una BD "de desarrollo"
+  aparte: `epimeteo` (rol y base) es la real, con datos reales acumulados de las pruebas de cada
+  fase (cuentas `BotA_*`/`BotB_*` de `SmokeClient` y `WorldBot`, entre otras). La Fase 5 no borró
+  nada de eso al pasar a producción — es una decisión pendiente, no tomada por esta sesión, si
+  conviene limpiarlo antes de anunciar el juego.
 
 ## Hecho en la Fase 1
 
@@ -270,25 +274,92 @@ ráfaga de 6) lo lee como intento de correr más de la cuenta: **un jugador hone
 expulsado por minimizar el juego**. Ahora se dan como mucho 2 pasos por frame y el resto del
 desfase se descarta, que es la misma decisión que tomó el servidor en la Fase 1 con su bucle.
 
+## Hecho en la Fase 5 — Despliegue mínimo
+
+Plan completo en `docs/fases/FASE-05-despliegue.md`, escrito y ejecutado en esta sesión tras
+diagnosticar el servidor real (`docs/00 §5` ya no tiene el aviso "pendiente de confirmar").
+
+- **Hallazgo antes de tocar nada:** nginx ya tenía el 443, sirviendo `waterressistan.duckdns.org`
+  (otro dominio, ya en producción). DuckDNS resultó ser **wildcard** (`dig` confirma que
+  cualquier subdominio resuelve a la misma IP), así que no hizo falta DNS nuevo:
+  `epimeteo.waterressistan.duckdns.org` ya apuntaba aquí.
+- `deploy/nginx-epimeteo.conf`: fichero **propio**, nunca se tocó
+  `/etc/nginx/sites-available/default` (gestionado por Certbot, dominio ajeno ya en producción).
+  Certificado propio con `certbot --nginx -d epimeteo.waterressistan.duckdns.org` — no reutiliza
+  ni modifica el otro certificado.
+- **Fallo real encontrado:** `Program.cs` leía `Connection.RemoteIpAddress` directamente para el
+  rate limit de login (5/min por IP, Fase 2). Detrás de nginx eso habría sido siempre
+  `127.0.0.1` — el límite habría dejado de proteger a nadie, todo el mundo habría compartido el
+  mismo cupo. Arreglado con `ForwardedHeaders` (`KnownProxies` restringido al loopback) y
+  verificado a mano: una conexión con `X-Forwarded-For: 203.0.113.77` falsificado quedó
+  registrada con esa IP en los logs, tal y como se espera que ocurra detrás de nginx.
+- `Content/ContentPaths.cs`: ahora prueba primero `content/` junto al binario (lo que deja el
+  publish) y sólo si no está, sube buscando `Epimeteo.sln` (dev/test sin cambios). Misma idea que
+  `ClientContent` del cliente Godot (Fase 4).
+- Usuario de sistema `epimeteo` (sin shell), `/opt/epimeteo/{app,content,backups}`,
+  `epimeteo.service` (systemd, `Restart=always`, `ProtectSystem=strict`, `ProtectHome=true`,
+  habilitado para arrancar solo). `content/` vive en `/opt/epimeteo/content` y `app/content` es un
+  enlace a él (Fase 5, publish.sh).
+- `deploy/publish.sh`: build + test + publish (framework-dependent) + rsync + reinicio +
+  comprobación de `/version`. **No publica si los tests fallan.**
+- `deploy/backup-postgres.sh` + `epimeteo-backup.{service,timer}`: `pg_dump` diario a las 04:30,
+  purga a los 14 días, corre como `epimeteo` vía `EnvironmentFile` (`/opt/epimeteo/backup.env`,
+  gitignored). Restauración probada en una BD aparte (`epimeteo_restore_test`, borrada después):
+  recuentos de filas idénticos al original.
+
+### Dos fallos de mi propio script, encontrados al probarlo de verdad
+
+- `mktemp -d` crea directorios en `700`, y `rsync -a` arrastra ese modo al destino: la primera
+  publicación dejó `/opt/epimeteo/app` en `700` por accidente, no por decisión. `chmod 755`
+  explícito después del `rsync`.
+- Ese mismo `700` accidental hizo que el chequeo `[ -f .../appsettings.Production.json ]` del
+  propio script (ejecutado como `ubuntu`, no como `epimeteo`) dijera "falta" aunque el fichero
+  **sí estaba** — sólo no podía atravesar el directorio para verlo. Cambiado a `sudo test -f`.
+  Sin este arreglo, una reinstalación limpia se habría quedado atascada en su propio primer
+  arranque.
+- `dotnet publish` copia `appsettings.Development.json` al directorio de salida si existe en el
+  árbol de trabajo (tiene la contraseña de desarrollo): se borra explícitamente del directorio de
+  publicación antes de sincronizar, no llega ni de paso a `/opt/epimeteo`.
+- `rsync --delete` sin excluir `appsettings.Production.json` lo habría borrado en cada publish,
+  porque no existe en el origen (es un secreto, no está en git). `--exclude` añadido.
+
+### Verificación Fase 5 (esta sesión, contra el dominio público real)
+
+Criterio de aceptación de `FASE-05 §6`:
+
+1. ✅ `nginx -t` en verde; `epimeteo.service` activo y **habilitado** (sobrevive a un reinicio).
+2. ✅ `certbot certificates` lista el certificado propio (caduca 2026-11-02); `certbot renew
+   --dry-run` en verde.
+3. ✅ `tools/Epimeteo.SmokeClient` contra `wss://epimeteo.waterressistan.duckdns.org/ws` —
+   **33/33 comprobaciones en verde**, incluido el flujo completo de personajes. El log del
+   servidor confirma que la conexión salió y volvió por la IP pública real del servidor
+   (`130.110.232.218`, no `127.0.0.1`): `ForwardedHeaders` funcionando de punta a punta.
+   **No probado desde un dispositivo en una red 4G real** — esta sesión no tiene acceso a uno;
+   la evidencia indirecta (DNS público, certificado de una CA pública, firewall abierto en 443,
+   IP pública en los logs) es lo más cerca que se puede llegar sin él.
+4. ✅ `deploy/publish.sh` corrido dos veces seguidas: la segunda no rompió nada.
+5. ✅ Restauración de `pg_dump` en `epimeteo_restore_test`: recuentos de filas idénticos al
+   original en `accounts`, `characters`, `item_instances`.
+6. ✅ `docs/00-arquitectura.md §5` actualizado, ya no dice "pendiente de confirmar".
+
 ## Siguiente sesión
 
-**Fase 5 — Despliegue mínimo · Sonnet.** Es la siguiente en `docs/03-roadmap-fases.md`. Ojo con
-tres cosas que ya se sabe que muerden:
-
-1. `ContentPaths` no sirve para un `publish` de un solo fichero (heredado de la Fase 3), y ahora
-   también hay un `ClientContent` en el cliente con el mismo problema al exportar desde Godot.
-   El `MapHash` convierte el fallo en un error ruidoso en vez de un desync silencioso, pero hay
-   que empaquetar `content/` de verdad.
-2. Hay que decidir cómo cuelga el subdominio del proxy existente sin tocar nginx/uvicorn/node
-   (ver "Entorno").
-3. `Epimeteo:LoginAttemptsPerMinute` está a 5 por defecto y cuenta por IP: detrás de un proxy
-   inverso hay que pasar la IP real del cliente o **todo el mundo compartirá el mismo cupo**.
+**Fase 6 — Inventario y equipamiento · Sonnet.** Siguiente en `docs/03-roadmap-fases.md`.
 
 **Pendiente aparte, en cuanto haya una máquina con entorno gráfico:** abrir `client/project.godot`
 en Godot 4.5 y comprobar el punto 7 del criterio de la Fase 4 — dos clientes en el mismo mapa,
 viéndose moverse, movimiento propio inmediato y las paredes parando. El HUD da los números
 (correcciones y error máximo) sin herramientas. Con `--lag-ms=150` se reproduce el caso jugable.
-Es lo único de la Fase 4 que no se ha visto funcionar.
+Es lo único de la Fase 4 que no se ha visto funcionar. Ahora que el juego está en producción, el
+cliente puede apuntar a `wss://epimeteo.waterressistan.duckdns.org/ws` en vez de `127.0.0.1`.
+
+**Pendiente de decidir, no técnico:** los datos de prueba acumulados en la BD (cuentas `Bot*` de
+`SmokeClient`/`WorldBot` a lo largo de las Fases 1–5) — si el juego se va a anunciar de verdad,
+alguien tiene que decidir si se limpian antes. Esta sesión no ha borrado nada.
+
+**Verificación real que sólo puede hacer un humano:** conectar desde un móvil en datos 4G (no
+en la red del servidor) a `wss://epimeteo.waterressistan.duckdns.org/ws` con el cliente Godot, en
+cuanto exista una build para probarlo.
 
 Recordatorio de entorno: este servidor de producción ya tiene `dotnet`, Postgres y el rol
 `epimeteo` listos; no hace falta repetir la instalación en próximas sesiones aquí. La contraseña

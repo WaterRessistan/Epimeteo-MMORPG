@@ -1,3 +1,4 @@
+using System.Net;
 using Epimeteo.Server;
 using Epimeteo.Server.Content;
 using Epimeteo.Server.Net;
@@ -7,6 +8,7 @@ using Epimeteo.Server.Persistence.Characters;
 using Epimeteo.Server.World;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Time;
+using Microsoft.AspNetCore.HttpOverrides;
 using Serilog;
 using Serilog.Events;
 
@@ -78,6 +80,18 @@ try
     });
 
     var app = builder.Build();
+
+    // Detrás del proxy inverso (Fase 5, docs/fases/FASE-05-despliegue.md §D2),
+    // Connection.RemoteIpAddress sería siempre 127.0.0.1 y el rate limit de login por IP
+    // (AuthService, 5/min) dejaría de proteger a nadie. KnownProxies limitado al propio loopback:
+    // nginx corre en esta misma máquina, así que sólo se confía en la cabecera si la conexión TCP
+    // ya venía del loopback. El puerto de Kestrel además es sólo loopback (más abajo), así que
+    // nadie de fuera puede alcanzarlo directamente para falsificar la cabecera.
+    app.UseForwardedHeaders(new ForwardedHeadersOptions
+    {
+        ForwardedHeaders = ForwardedHeaders.XForwardedFor,
+        KnownProxies = { IPAddress.Loopback, IPAddress.IPv6Loopback },
+    });
 
     app.UseWebSockets(new WebSocketOptions
     {

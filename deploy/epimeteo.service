@@ -1,0 +1,36 @@
+# Unidad systemd del servidor de juego. Instalación:
+#   sudo cp deploy/epimeteo.service /etc/systemd/system/epimeteo.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now epimeteo
+#
+# Requiere que ya exista el usuario de sistema y el árbol de /opt/epimeteo
+# (docs/fases/FASE-05-despliegue.md §4, paso 4) antes de arrancar.
+
+[Unit]
+Description=Epimeteo — servidor de juego (WebSocket + API)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=epimeteo
+Group=epimeteo
+WorkingDirectory=/opt/epimeteo/app
+ExecStart=/usr/bin/dotnet /opt/epimeteo/app/Epimeteo.Server.dll
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=DOTNET_ENVIRONMENT=Production
+
+Restart=always
+RestartSec=5
+
+# Aislamiento: el juego acepta conexiones de desconocidos por WebSocket, a diferencia de los
+# demás servicios de esta máquina que corren scripts de un solo usuario. Sin shell, sin acceso al
+# resto del sistema de ficheros salvo lo que necesita.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/epimeteo/app/logs
+
+[Install]
+WantedBy=multi-user.target

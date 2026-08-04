@@ -1,0 +1,14 @@
+# Dispara epimeteo-backup.service una vez al día. Instalación: ver epimeteo-backup.service.
+
+[Unit]
+Description=Epimeteo — dispara el backup diario de Postgres
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+# Si la máquina estaba apagada a las 04:30, lo lanza en cuanto arranca en vez de esperar al día
+# siguiente: un backup tarde es mejor que uno saltado entero.
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

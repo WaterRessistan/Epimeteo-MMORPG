@@ -180,28 +180,35 @@ Nada se escribe en BD dentro del tick. Las entidades sucias se marcan y una tare
 
 Nada del juego se expone directamente. `Epimeteo.Server` bindea `127.0.0.1:5100` y `127.0.0.1:5101`.
 
-> **Pendiente de confirmar (Fase 5):** no está claro qué proceso ocupa el 443 en el servidor de
-> producción — puede ser nginx o una app Python sirviendo directamente. Diagnóstico:
-> `sudo ss -lntp | grep -E ':(80|443|8080)\b'`. Tres escenarios:
->
-> | Quién tiene el 443 | Qué hacemos |
-> |---|---|
-> | nginx / Caddy / Apache | Añadir un `server` block para el subdominio. **Preferido.** |
-> | Python (gunicorn/uvicorn) directo | Poner nginx delante de ambos, o mover el juego a un puerto propio con TLS de Kestrel |
-> | Nada, sólo 80 ocupado | Exponer `7777/tcp` con TLS gestionado por Kestrel |
+**Confirmado en la Fase 5.** `sudo ss -lntp | grep -E ':(80|443|8080|8443)\b'` en el servidor de
+producción: nginx tiene el 80 y el 443 (sirviendo ya `waterressistan.duckdns.org`, un dominio
+DuckDNS gratuito y **wildcard** — cualquier subdominio resuelve a la misma IP sin tocar DNS).
+Escenario "nginx / Caddy / Apache", el preferido de la tabla original.
 
-Con proxy inverso, publicando `juego.tudominio.com` en el 443 existente:
+El juego cuelga de `epimeteo.waterressistan.duckdns.org`, con su propio fichero de nginx
+(`deploy/nginx-epimeteo.conf` → `/etc/nginx/sites-available/epimeteo`) **independiente** del
+`default` que gestiona Certbot para el otro dominio — nunca se edita ese fichero a mano.
 
 - `location /ws` con `proxy_http_version 1.1`, cabeceras `Upgrade`/`Connection`,
-  `proxy_read_timeout 3600s` (si no, nginx corta la partida al minuto).
-- `location /` para la API HTTP (login, `/version`, `/status`).
+  `X-Forwarded-For`/`X-Real-IP`, `proxy_read_timeout 3600s` (si no, nginx corta la partida al
+  minuto: el juego mantiene la conexión con `Ping`/`Pong` dentro del propio WebSocket, no con
+  peticiones HTTP nuevas).
+- `location /` para la API HTTP (`/version`, `/status`).
+- Certificado propio vía `certbot --nginx -d epimeteo.waterressistan.duckdns.org`: no reutiliza ni
+  modifica el certificado del otro dominio.
 
-Alternativa si no quieres tocar nginx: exponer `7777/tcp` directamente con TLS gestionado por
-Kestrel. Es más simple pero pierdes el certificado compartido y el rate limiting de nginx.
-**Recomendación: nginx + subdominio.**
+**El servidor tiene que confiar en `X-Forwarded-For`** para que el rate limit de login por IP siga
+funcionando detrás del proxy (si no, `Connection.RemoteIpAddress` sería siempre `127.0.0.1` para
+todo el mundo). Middleware `ForwardedHeaders` en `Program.cs`, con `KnownProxies` restringido al
+propio loopback — nginx corre en la misma máquina y el puerto de Kestrel no es alcanzable desde
+fuera, así que nadie puede falsificar la cabecera saltándose el proxy.
 
-Servicio systemd `epimeteo.service` con `Restart=always`, usuario dedicado sin shell,
-`ProtectSystem=strict` y `WorkingDirectory` en `/opt/epimeteo`.
+Servicio systemd `epimeteo.service` con `Restart=always`, usuario de sistema `epimeteo` sin shell,
+`ProtectSystem=strict` y `WorkingDirectory` en `/opt/epimeteo/app`. `content/` vive en
+`/opt/epimeteo/content`, enlazado desde ahí (`Content/ContentPaths.cs` lo busca primero junto al
+binario, y si no existe, sube buscando `Epimeteo.sln` — así `dotnet run` en el repo sigue
+funcionando sin cambios). Detalle completo y script de publicación en
+`docs/fases/FASE-05-despliegue.md`.
 
 ---
 

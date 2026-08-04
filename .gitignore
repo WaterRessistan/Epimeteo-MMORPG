@@ -29,6 +29,7 @@ appsettings.*.local.json
 *.pfx
 *.key
 deploy/secrets/
+deploy/backup.env
 
 # ---- Datos locales ----
 *.log

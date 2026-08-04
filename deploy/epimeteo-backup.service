@@ -1,0 +1,24 @@
+# Backup diario de Postgres. Instalación:
+#   sudo cp deploy/backup-postgres.sh /opt/epimeteo/backup-postgres.sh
+#   sudo chmod +x /opt/epimeteo/backup-postgres.sh
+#   sudo cp deploy/epimeteo-backup.service deploy/epimeteo-backup.timer /etc/systemd/system/
+#   # crear /opt/epimeteo/backup.env con PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD, chmod 600
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now epimeteo-backup.timer
+#
+# Se dispara desde epimeteo-backup.timer; no se activa (`enable`) este .service directamente.
+
+[Unit]
+Description=Epimeteo — backup diario de Postgres
+
+[Service]
+Type=oneshot
+User=epimeteo
+Group=epimeteo
+EnvironmentFile=/opt/epimeteo/backup.env
+ExecStart=/opt/epimeteo/backup-postgres.sh
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/epimeteo/backups
