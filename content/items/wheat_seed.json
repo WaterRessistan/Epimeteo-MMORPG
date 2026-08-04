@@ -1,0 +1,6 @@
+{
+  "key": "item.wheat_seed",
+  "displayName": "Semilla de trigo",
+  "type": "Seed",
+  "maxStack": 99
+}

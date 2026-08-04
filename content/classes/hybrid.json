@@ -6,5 +6,11 @@
   "baseVit": 5,
   "baseDex": 5,
   "baseHp": 95,
-  "baseMp": 60
+  "baseMp": 60,
+  "startingItems": [
+    { "defKey": "item.iron_sword", "quantity": 1 },
+    { "defKey": "item.leather_chest", "quantity": 1 },
+    { "defKey": "item.health_potion", "quantity": 1 },
+    { "defKey": "item.wheat_seed", "quantity": 3 }
+  ]
 }

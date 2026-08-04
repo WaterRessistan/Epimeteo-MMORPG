@@ -74,11 +74,18 @@ public sealed class Zone
             request.ClassKey,
             request.Name,
             MoveState.AtRest(position, request.Facing),
-            nowMs)
+            nowMs,
+            request.Items)
         {
             PaletteIndex = request.PaletteIndex,
             Hp = request.Hp,
             HpMax = request.HpMax,
+            Mp = request.Mp,
+            MpMax = request.MpMax,
+            Str = request.StatStr,
+            IntStat = request.StatInt,
+            Vit = request.StatVit,
+            Dex = request.StatDex,
         };
 
         player.Cell = _grid.CellOf(position);

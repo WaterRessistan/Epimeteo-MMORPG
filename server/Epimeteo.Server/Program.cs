@@ -1,11 +1,14 @@
 using System.Net;
 using Epimeteo.Server;
 using Epimeteo.Server.Content;
+using Epimeteo.Server.Inventory;
 using Epimeteo.Server.Net;
 using Epimeteo.Server.Persistence;
 using Epimeteo.Server.Persistence.Accounts;
 using Epimeteo.Server.Persistence.Characters;
+using Epimeteo.Server.Persistence.Items;
 using Epimeteo.Server.World;
+using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Time;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -50,13 +53,17 @@ try
     var contentRoot = ContentPaths.ResolveContentRoot();
     builder.Services.AddSingleton(new ClassCatalog(contentRoot));
     builder.Services.AddSingleton(new MapCatalog(contentRoot));
+    builder.Services.AddSingleton(new ItemCatalog(contentRoot));
     builder.Services.AddSingleton<CharacterRepository>();
     builder.Services.AddSingleton<CharacterService>();
+    builder.Services.AddSingleton<ItemRepository>();
     builder.Services.AddSingleton<EntityIdAllocator>();
     builder.Services.AddSingleton<WorldInbox>();
     builder.Services.AddSingleton<IWorldInbox>(sp => sp.GetRequiredService<WorldInbox>());
     builder.Services.AddSingleton<CharacterPositionSaver>();
     builder.Services.AddSingleton<IPositionSink>(sp => sp.GetRequiredService<CharacterPositionSaver>());
+    builder.Services.AddSingleton<InventorySaver>();
+    builder.Services.AddSingleton<IInventorySink>(sp => sp.GetRequiredService<InventorySaver>());
     builder.Services.AddSingleton<GameWorld>();
     builder.Services.AddSingleton<SessionMessageHandler>();
     builder.Services.AddSingleton<SessionManager>();
@@ -65,9 +72,10 @@ try
         sp.GetRequiredService<GameWorld>(),
         sp.GetRequiredService<SessionManager>().OnTick));
 
-    // La cola de posiciones arranca antes que el bucle y, por tanto, se para después: así el
+    // Las colas de guardado arrancan antes que el bucle y, por tanto, se paran después: así el
     // vaciado final del apagado todavía tiene quien lo escriba.
     builder.Services.AddHostedService(sp => sp.GetRequiredService<CharacterPositionSaver>());
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<InventorySaver>());
     builder.Services.AddHostedService<GameLoopService>();
 
     builder.WebHost.ConfigureKestrel(kestrel =>
@@ -155,7 +163,8 @@ try
         snapshotRate = opts.SnapshotRate,
     }));
 
-    app.MapGet("/status", (SessionManager sessions, GameLoop loop, GameWorld world, CharacterPositionSaver saver) =>
+    app.MapGet("/status", (
+        SessionManager sessions, GameLoop loop, GameWorld world, CharacterPositionSaver saver, InventorySaver invSaver) =>
     {
         var stats = loop.Metrics.Snapshot();
         return Results.Json(new
@@ -168,6 +177,7 @@ try
                 players = world.PlayerCount,
                 entities = world.EntityCount,
                 pendingSaves = saver.PendingCount,
+                pendingInventorySaves = invSaver.PendingCount,
             },
             tick = new
             {

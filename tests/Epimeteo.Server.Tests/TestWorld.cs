@@ -44,7 +44,14 @@ internal static class TestWorld
         Facing.South,
         PaletteIndex: 0,
         Hp: 100,
-        HpMax: 120);
+        HpMax: 120,
+        Mp: 50,
+        MpMax: 50,
+        StatStr: 8,
+        StatInt: 2,
+        StatVit: 6,
+        StatDex: 4,
+        Items: []);
 
     /// <summary>Input de movimiento en una dirección.</summary>
     public static MoveInput Input(uint seq, int dirX, int dirY) =>

@@ -1,3 +1,4 @@
+using Epimeteo.Server.Inventory;
 using Epimeteo.Shared.Simulation;
 
 namespace Epimeteo.Server.World;
@@ -16,7 +17,14 @@ namespace Epimeteo.Server.World;
 /// <param name="Facing">Orientación guardada.</param>
 /// <param name="PaletteIndex">Apariencia placeholder.</param>
 /// <param name="Hp">Vida actual.</param>
-/// <param name="HpMax">Vida máxima, ya resuelta contra el catálogo de clases.</param>
+/// <param name="HpMax">Vida máxima, ya resuelta contra el catálogo de clases (sin equipo — FASE-06 §2 D5).</param>
+/// <param name="Mp">Maná actual.</param>
+/// <param name="MpMax">Maná máximo, sin equipo.</param>
+/// <param name="StatStr">Fuerza base guardada.</param>
+/// <param name="StatInt">Inteligencia base guardada.</param>
+/// <param name="StatVit">Vitalidad base guardada.</param>
+/// <param name="StatDex">Destreza base guardada.</param>
+/// <param name="Items">Contenedores 0–3 cargados de <c>item_instances</c> (FASE-06 §2 D1).</param>
 public sealed record WorldJoinRequest(
     int EntityId,
     long CharacterId,
@@ -27,4 +35,11 @@ public sealed record WorldJoinRequest(
     Facing Facing,
     byte PaletteIndex,
     int Hp,
-    int HpMax);
+    int HpMax,
+    int Mp,
+    int MpMax,
+    int StatStr,
+    int StatInt,
+    int StatVit,
+    int StatDex,
+    IReadOnlyList<ItemStack> Items);

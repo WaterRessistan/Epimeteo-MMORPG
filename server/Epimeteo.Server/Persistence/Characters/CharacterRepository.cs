@@ -1,12 +1,13 @@
 using System.Text.Json;
 using Dapper;
 using Epimeteo.Server.Content;
+using Epimeteo.Shared.Data;
 using Npgsql;
 
 namespace Epimeteo.Server.Persistence.Characters;
 
 /// <summary>Acceso Dapper a la tabla <c>characters</c>. Sólo ve personajes vivos (<c>deleted_at IS NULL</c>).</summary>
-public sealed class CharacterRepository(NpgsqlConnectionFactory connections)
+public sealed class CharacterRepository(NpgsqlConnectionFactory connections, ItemCatalog items)
 {
     private const string SelectColumns = """
         id, account_id AS "AccountId", slot, name, class_key AS "ClassKey", level, xp,
@@ -48,10 +49,12 @@ public sealed class CharacterRepository(NpgsqlConnectionFactory connections)
     }
 
     /// <summary>
-    /// Crea el personaje con los stats base de <paramref name="classDef"/>. Devuelve el motivo
-    /// de conflicto (no una excepción que suba al manejador de mensajes, CLAUDE.md §4) cuando el
-    /// slot ya está ocupado por un personaje vivo o el nombre ya está en uso — se distingue por
-    /// el nombre del índice único que salta, no adivinando el mensaje de error.
+    /// Crea el personaje con los stats base de <paramref name="classDef"/> y le da su kit
+    /// inicial (<c>classDef.StartingItems</c>, FASE-06 §2 D6), en una sola transacción: un
+    /// personaje nunca existe sin su kit ni al revés. Devuelve el motivo de conflicto (no una
+    /// excepción que suba al manejador de mensajes, CLAUDE.md §4) cuando el slot ya está ocupado
+    /// por un personaje vivo o el nombre ya está en uso — se distingue por el nombre del índice
+    /// único que salta, no adivinando el mensaje de error.
     /// </summary>
     public async Task<(long? Id, CharacterCreateError Error)> CreateAsync(
         long accountId, int slot, string name, ClassDefinition classDef, byte paletteIndex, CancellationToken ct = default)
@@ -59,6 +62,7 @@ public sealed class CharacterRepository(NpgsqlConnectionFactory connections)
         var appearance = JsonSerializer.Serialize(new { palette = paletteIndex });
 
         await using var connection = await connections.OpenAsync(ct).ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(ct).ConfigureAwait(false);
         try
         {
             var id = await connection.ExecuteScalarAsync<long>(
@@ -84,18 +88,66 @@ public sealed class CharacterRepository(NpgsqlConnectionFactory connections)
                         hp = classDef.BaseHp,
                         mp = classDef.BaseMp,
                     },
+                    transaction,
                     cancellationToken: ct)).ConfigureAwait(false);
+
+            await InsertStartingItemsAsync(connection, transaction, id, classDef.StartingItems, ct).ConfigureAwait(false);
+            await transaction.CommitAsync(ct).ConfigureAwait(false);
 
             return (id, CharacterCreateError.None);
         }
         catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
         {
+            await transaction.RollbackAsync(ct).ConfigureAwait(false);
+
             return ex.ConstraintName switch
             {
                 "characters_account_slot_uq" => (null, CharacterCreateError.SlotOccupied),
                 "characters_name_uq" => (null, CharacterCreateError.NameTaken),
                 _ => (null, CharacterCreateError.SlotOccupied),
             };
+        }
+    }
+
+    /// <summary>
+    /// Un <c>INSERT</c> por entrada de <c>startingItems</c>, cada uno en el contenedor que le
+    /// toque a su <c>ItemType</c> (FASE-06 §2 D3) y en el siguiente slot libre de ese contenedor
+    /// — el kit lo cura el contenido, así que basta con no repetir slot dentro de la misma clase.
+    /// </summary>
+    private async Task InsertStartingItemsAsync(
+        NpgsqlConnection connection, NpgsqlTransaction transaction, long characterId,
+        IReadOnlyList<StartingItem> startingItems, CancellationToken ct)
+    {
+        var nextSlot = new Dictionary<ContainerId, short>();
+
+        foreach (var starting in startingItems)
+        {
+            if (!items.TryGet(starting.DefKey, out var itemDef))
+            {
+                throw new InvalidOperationException(
+                    $"El kit inicial de una clase referencia '{starting.DefKey}', que no existe en content/items/.");
+            }
+
+            var container = InventoryConstants.AllowedContainer(itemDef.Type);
+            var slot = nextSlot.GetValueOrDefault(container, (short)0);
+            nextSlot[container] = (short)(slot + 1);
+
+            await connection.ExecuteAsync(
+                new CommandDefinition(
+                    """
+                    INSERT INTO item_instances (def_key, owner_char_id, container, slot, quantity)
+                    VALUES (@defKey, @characterId, @container, @slot, @quantity)
+                    """,
+                    new
+                    {
+                        defKey = starting.DefKey,
+                        characterId,
+                        container = (short)container,
+                        slot,
+                        quantity = starting.Quantity,
+                    },
+                    transaction,
+                    cancellationToken: ct)).ConfigureAwait(false);
         }
     }
 

@@ -1,6 +1,8 @@
 using Epimeteo.Server.Content;
+using Epimeteo.Server.Inventory;
 using Epimeteo.Server.Persistence.Accounts;
 using Epimeteo.Server.Persistence.Characters;
+using Epimeteo.Server.Persistence.Items;
 using Epimeteo.Server.World;
 using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
@@ -34,6 +36,7 @@ public sealed class SessionMessageHandler
     private readonly ClassCatalog _classes;
     private readonly MapCatalog _maps;
     private readonly EntityIdAllocator _entityIds;
+    private readonly ItemRepository _items;
     private readonly ILogger _log = Log.ForContext<SessionMessageHandler>();
 
     public SessionMessageHandler(
@@ -43,7 +46,8 @@ public sealed class SessionMessageHandler
         CharacterService characters,
         ClassCatalog classes,
         MapCatalog maps,
-        EntityIdAllocator entityIds)
+        EntityIdAllocator entityIds,
+        ItemRepository items)
     {
         _options = options;
         _worldInbox = worldInbox;
@@ -52,6 +56,7 @@ public sealed class SessionMessageHandler
         _classes = classes;
         _maps = maps;
         _entityIds = entityIds;
+        _items = items;
     }
 
     /// <summary>Procesa un frame entrante. Llamado sólo desde el bucle de lectura de la sesión.</summary>
@@ -285,7 +290,14 @@ public sealed class SessionMessageHandler
 
         var spawn = new Vec2(character.PosX, character.PosY);
         var facing = (Facing)Math.Clamp(character.Facing, 0, 3);
-        var hpMax = _classes.TryGet(character.ClassKey, out var classDef) ? classDef.BaseHp : character.Hp;
+        var hasClass = _classes.TryGet(character.ClassKey, out var classDef);
+        var hpMax = hasClass ? classDef!.BaseHp : character.Hp;
+        var mpMax = hasClass ? classDef!.BaseMp : character.Mp;
+
+        // Se carga aquí, en el hilo de red, con la fila que ya se leyó: el tick nunca consulta
+        // Postgres (CLAUDE.md §4, FASE-06 §2 D1) — mismo criterio que el resto de este método.
+        var itemRows = await _items.ListByCharacterAsync(character.Id).ConfigureAwait(false);
+        var items = itemRows.Select(ToItemStack).ToArray();
 
         session.CharacterId = character.Id;
         session.EntityId = _entityIds.Next();
@@ -303,7 +315,14 @@ public sealed class SessionMessageHandler
             facing,
             character.PaletteIndex,
             character.Hp,
-            hpMax);
+            hpMax,
+            character.Mp,
+            mpMax,
+            character.StatStr,
+            character.StatInt,
+            character.StatVit,
+            character.StatDex,
+            items);
 
         session.Send(Opcode.WorldEnter, new S2CWorldEnter
         {
@@ -377,6 +396,19 @@ public sealed class SessionMessageHandler
         _log.Warning("Mapa {MapKey} desconocido; se usa map.village", mapKey);
         return _maps.TryGet("map.village", out var fallback) ? fallback : null;
     }
+
+    /// <summary>Traduce una fila cruda de <c>item_instances</c> al tipo que usa el mundo en memoria.</summary>
+    private static ItemStack ToItemStack(ItemRow row) => new()
+    {
+        DefKey = row.DefKey,
+        Container = (ContainerId)row.Container,
+        Slot = (byte)row.Slot,
+        Quantity = row.Quantity,
+        Durability = row.Durability,
+        DurabilityMax = row.DurabilityMax,
+        Quality = (byte)row.Quality,
+        BoundTo = row.BoundTo,
+    };
 
     private void SendAuthResult(Session session, AuthOutcome outcome)
     {

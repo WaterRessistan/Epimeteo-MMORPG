@@ -15,4 +15,18 @@ public sealed record ClassDefinition
     public required int BaseDex { get; init; }
     public required int BaseHp { get; init; }
     public required int BaseMp { get; init; }
+
+    /// <summary>
+    /// Kit inicial (FASE-06 §2 D6): sin tiendas ni loot todavía, es la única forma de que un
+    /// personaje recién creado tenga algo que mover o equipar. <c>CharacterService</c> lo inserta
+    /// en la misma operación que crea la fila de <c>characters</c>.
+    /// </summary>
+    public StartingItem[] StartingItems { get; init; } = [];
+}
+
+/// <summary>Una entrada del kit inicial de una clase.</summary>
+public sealed record StartingItem
+{
+    public required string DefKey { get; init; }
+    public required int Quantity { get; init; }
 }

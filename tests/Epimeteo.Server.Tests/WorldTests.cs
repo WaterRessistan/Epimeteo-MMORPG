@@ -1,5 +1,8 @@
 using Epimeteo.Server.Content;
+using Epimeteo.Server.Inventory;
+using Epimeteo.Server.Persistence.Items;
 using Epimeteo.Server.World;
+using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Net.Messages;
 using Epimeteo.Shared.Simulation;
@@ -14,6 +17,9 @@ namespace Epimeteo.Server.Tests;
 /// </summary>
 public sealed class WorldTests
 {
+    private static readonly ItemCatalog Items = new(ContentPaths.ResolveContentRoot());
+    private static readonly ClassCatalog Classes = new(ContentPaths.ResolveContentRoot());
+
     private sealed class FakeSink : IPositionSink
     {
         public List<PositionSave> Saves { get; } = [];
@@ -21,12 +27,20 @@ public sealed class WorldTests
         public void Enqueue(in PositionSave save) => Saves.Add(save);
     }
 
+    private sealed class FakeInventorySink : IInventorySink
+    {
+        public List<InventorySave> Saves { get; } = [];
+
+        public void Enqueue(in InventorySave save) => Saves.Add(save);
+    }
+
     private static (GameWorld World, WorldInbox Inbox, FakeSink Sink) Build(int saveIntervalSeconds = 30)
     {
         var maps = new MapCatalog(ContentPaths.ResolveContentRoot());
         var inbox = new WorldInbox();
         var sink = new FakeSink();
-        return (new GameWorld(maps, inbox, sink, saveIntervalSeconds), inbox, sink);
+        var world = new GameWorld(maps, inbox, sink, Items, Classes, new FakeInventorySink(), saveIntervalSeconds);
+        return (world, inbox, sink);
     }
 
     private static WorldJoinRequest VillageJoin(int entityId, Vec2 position, long characterId) => new(
@@ -39,7 +53,14 @@ public sealed class WorldTests
         Facing.South,
         PaletteIndex: 0,
         Hp: 100,
-        HpMax: 120);
+        HpMax: 120,
+        Mp: 50,
+        MpMax: 50,
+        StatStr: 8,
+        StatInt: 2,
+        StatVit: 6,
+        StatDex: 4,
+        Items: []);
 
     private static void PostInput(WorldInbox inbox, int sessionId, uint seq, int dirX, int dirY)
     {
@@ -212,7 +233,7 @@ public sealed class WorldTests
             world.Tick(1 + i, (1 + i) * 50);
         }
 
-        world.FlushAllPositions();
+        world.FlushAllState();
 
         Assert.Single(sink.Saves);
     }

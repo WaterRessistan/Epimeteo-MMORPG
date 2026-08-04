@@ -1,0 +1,7 @@
+{
+  "key": "item.health_potion",
+  "displayName": "Poción de vida",
+  "type": "Consumable",
+  "maxStack": 20,
+  "healAmount": 30
+}

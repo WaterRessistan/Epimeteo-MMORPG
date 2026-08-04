@@ -1,0 +1,9 @@
+{
+  "key": "item.leather_chest",
+  "displayName": "Peto de cuero",
+  "type": "Armor",
+  "maxStack": 1,
+  "equipCategory": "Chest",
+  "bonusVit": 2,
+  "bonusHp": 15
+}

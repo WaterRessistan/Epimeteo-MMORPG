@@ -2,6 +2,7 @@ using Dapper;
 using Epimeteo.Server.Content;
 using Epimeteo.Server.Persistence;
 using Epimeteo.Server.Persistence.Characters;
+using Epimeteo.Shared.Data;
 using Xunit;
 
 namespace Epimeteo.Server.Tests;
@@ -15,6 +16,7 @@ namespace Epimeteo.Server.Tests;
 public sealed class CharacterRepositoryTests
 {
     private readonly NpgsqlConnectionFactory _connections = new(TestDatabase.ConnectionString ?? string.Empty);
+    private static readonly ItemCatalog Items = new(ContentPaths.ResolveContentRoot());
 
     private static readonly ClassDefinition Warrior = new()
     {
@@ -31,7 +33,7 @@ public sealed class CharacterRepositoryTests
     [PostgresFact]
     public async Task CreateAsync_LuegoListByAccountAsync_DevuelveElPersonajeCreado()
     {
-        var repo = new CharacterRepository(_connections);
+        var repo = new CharacterRepository(_connections, Items);
         var accountId = await CreateAccountAsync();
 
         try
@@ -58,7 +60,7 @@ public sealed class CharacterRepositoryTests
     [PostgresFact]
     public async Task CreateAsync_ConSlotYaOcupado_DevuelveSlotOccupied()
     {
-        var repo = new CharacterRepository(_connections);
+        var repo = new CharacterRepository(_connections, Items);
         var accountId = await CreateAccountAsync();
 
         try
@@ -79,7 +81,7 @@ public sealed class CharacterRepositoryTests
     [PostgresFact]
     public async Task CreateAsync_ConNombreYaUsado_DevuelveNameTaken()
     {
-        var repo = new CharacterRepository(_connections);
+        var repo = new CharacterRepository(_connections, Items);
         var accountId = await CreateAccountAsync();
         var name = UniqueName();
 
@@ -100,7 +102,7 @@ public sealed class CharacterRepositoryTests
     [PostgresFact]
     public async Task SoftDeleteAsync_LiberaElSlotParaUnPersonajeNuevo()
     {
-        var repo = new CharacterRepository(_connections);
+        var repo = new CharacterRepository(_connections, Items);
         var accountId = await CreateAccountAsync();
 
         try
@@ -126,7 +128,7 @@ public sealed class CharacterRepositoryTests
     [PostgresFact]
     public async Task GetOwnedAsync_ConCuentaAjena_DevuelveNull()
     {
-        var repo = new CharacterRepository(_connections);
+        var repo = new CharacterRepository(_connections, Items);
         var ownerAccountId = await CreateAccountAsync();
         var otherAccountId = await CreateAccountAsync();
 

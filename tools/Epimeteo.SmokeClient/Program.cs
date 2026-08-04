@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Net.Messages;
 using Epimeteo.Shared.Time;
@@ -40,6 +41,7 @@ internal static class Program
         await PersonajesFlujoCompleto(url);
         await BorradoDePersonaje(url);
         await PersonajesPersistenEntreConexiones(url);
+        await InventarioFlujoCompleto(url);
 
         if (args.Contains("--lento"))
         {
@@ -337,6 +339,114 @@ internal static class Program
         }
     }
 
+    /// <summary>
+    /// Flujo completo de inventario (FASE-06 §9): kit inicial, mover, equipar (con sus stats
+    /// derivados), un intento inválido que no debe cambiar nada, usar y tirar — y que todo
+    /// sobreviva a una reconexión.
+    /// </summary>
+    private static async Task InventarioFlujoCompleto(string url)
+    {
+        var username = $"smoke_{Guid.NewGuid():N}"[..20];
+        var name = $"Inv_{Guid.NewGuid():N}"[..10];
+
+        using var ws = await Open(url);
+        await Greet(ws);
+        var registered = await AuthWithRetry(ws, Opcode.Register,
+            new C2SRegister { Username = username, Email = null, Password = "clave-de-prueba-123" });
+        Check("Fase 6: registro para el flujo de inventario → Ok", registered is { Ok: true });
+
+        var create = await SendReceive<C2SCharCreate, S2CCharCreateResult>(
+            ws, Opcode.CharCreate,
+            new C2SCharCreate { Name = name, ClassKey = "class.warrior", Slot = 0, PaletteIndex = 0 },
+            Opcode.CharCreateResult);
+        Check("Fase 6: personaje guerrero creado para el flujo de inventario", create is { Ok: true });
+
+        await SendReceive<C2SCharSelect, S2CWorldEnter>(
+            ws, Opcode.CharSelect, new C2SCharSelect { CharacterId = create!.Character!.Id }, Opcode.WorldEnter);
+        await Send(ws, Opcode.WorldReady, new C2SWorldReady());
+
+        // ── Kit inicial (content/classes/warrior.json): espada+escudo en la bolsa de armas,
+        // 2 pociones en el general. Nada equipado todavía.
+        var full = await ReceiveUntil<S2CInventoryFull>(ws, Opcode.InventoryFull);
+        Check("InventoryFull trae los 3 stacks del kit inicial", full?.Items.Length == 3);
+        Check("La espada está en la bolsa de armas, slot 0",
+            full?.Items.Any(i => i.DefKey == "item.iron_sword" && i.Container == ContainerId.WeaponBag && i.Slot == 0) == true);
+        Check("El escudo está en la bolsa de armas, slot 1",
+            full?.Items.Any(i => i.DefKey == "item.wooden_shield" && i.Container == ContainerId.WeaponBag && i.Slot == 1) == true);
+        Check("Las 2 pociones están en el general, slot 0",
+            full?.Items.Any(i => i.DefKey == "item.health_potion" && i.Container == ContainerId.General && i.Slot == 0 && i.Quantity == 2) == true);
+
+        var equip0 = await ReceiveUntil<S2CEquipmentUpdate>(ws, Opcode.EquipmentUpdate);
+        Check("Sin equipo puesto, los stats derivados son los de base del guerrero",
+            equip0 is { Equipped.Length: 0, HpMax: 120, MpMax: 20, StrEffective: 8 });
+
+        // ── Mover la poción a otro slot del general.
+        await Send(ws, Opcode.InvMove, new C2SInvMove
+        {
+            FromContainer = ContainerId.General, FromSlot = 0, ToContainer = ContainerId.General, ToSlot = 5, Quantity = 2,
+        });
+        var moved = await ReceiveUntil<S2CInventoryDelta>(ws, Opcode.InventoryDelta);
+        Check("Mover la poción: el slot 0 queda vacío y el 5 la tiene",
+            moved?.Changes.Any(c => c.Container == ContainerId.General && c.Slot == 0 && c.Item is null) == true &&
+            moved?.Changes.Any(c => c.Container == ContainerId.General && c.Slot == 5 && c.Item?.Quantity == 2) == true);
+
+        // ── Equipar la espada en MainHand: sube la fuerza efectiva en el bono del ítem.
+        await Send(ws, Opcode.Equip, new C2SEquip { Container = ContainerId.WeaponBag, Slot = 0, EquipSlot = EquipSlot.MainHand });
+        var swordMoved = await ReceiveUntil<S2CInventoryDelta>(ws, Opcode.InventoryDelta);
+        Check("Equipar la espada vacía su slot en la bolsa de armas",
+            swordMoved?.Changes.Any(c => c.Container == ContainerId.WeaponBag && c.Slot == 0 && c.Item is null) == true);
+
+        var equip1 = await ReceiveUntil<S2CEquipmentUpdate>(ws, Opcode.EquipmentUpdate);
+        Check("La espada equipada sube la fuerza efectiva (bonusStr +2)",
+            equip1 is { StrEffective: 10, HpMax: 120 } &&
+            equip1.Equipped.Any(i => i.DefKey == "item.iron_sword" && i.Slot == (byte)EquipSlot.MainHand));
+
+        // ── Intentar equipar el escudo en Head: categoría equivocada, nada debe cambiar.
+        await Send(ws, Opcode.Equip, new C2SEquip { Container = ContainerId.WeaponBag, Slot = 1, EquipSlot = EquipSlot.Head });
+        var rejected = await ReceiveUntil<S2CSystemMessage>(ws, Opcode.SystemMessage);
+        Check("Equipar el escudo en Head se rechaza con SystemMessage", rejected?.Key == "inventory.NotEquippable");
+
+        // ── Usar una poción: la cantidad baja de 2 a 1.
+        await Send(ws, Opcode.InvUse, new C2SInvUse { Container = ContainerId.General, Slot = 5 });
+        var used = await ReceiveUntil<S2CInventoryDelta>(ws, Opcode.InventoryDelta);
+        Check("Usar una poción deja 1 en el stack",
+            used?.Changes.Any(c => c.Container == ContainerId.General && c.Slot == 5 && c.Item?.Quantity == 1) == true);
+
+        // ── Tirar la última poción: el hueco queda vacío.
+        await Send(ws, Opcode.InvDrop, new C2SInvDrop { Container = ContainerId.General, Slot = 5, Quantity = 1 });
+        var dropped = await ReceiveUntil<S2CInventoryDelta>(ws, Opcode.InventoryDelta);
+        Check("Tirar la última poción vacía el hueco",
+            dropped?.Changes.Any(c => c.Container == ContainerId.General && c.Slot == 5 && c.Item is null) == true);
+
+        // ── Reconectar: el estado final (espada puesta, escudo en la bolsa, sin pociones) tiene
+        // que sobrevivir — es la persistencia de la Fase 6 (FASE-06 §10.5), sin esperar a un
+        // reinicio del servidor.
+        await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
+
+        // El guardado de inventario es asíncrono (InventorySaver, FASE-06 §2 D2), igual que el
+        // de posición en la Fase 4: sin este margen, reconectar de inmediato leería Postgres
+        // antes de que la cola hubiera drenado el último guardado.
+        await Task.Delay(1500);
+
+        using var ws2 = await Open(url);
+        await Greet(ws2);
+        var loggedIn = await AuthWithRetry(ws2, Opcode.Login, new C2SLogin { Username = username, Password = "clave-de-prueba-123" });
+        Check("Fase 6: login al reconectar → Ok", loggedIn is { Ok: true });
+        await SendReceive<C2SCharSelect, S2CWorldEnter>(
+            ws2, Opcode.CharSelect, new C2SCharSelect { CharacterId = create.Character.Id }, Opcode.WorldEnter);
+        await Send(ws2, Opcode.WorldReady, new C2SWorldReady());
+
+        var fullAfter = await ReceiveUntil<S2CInventoryFull>(ws2, Opcode.InventoryFull);
+        Check("Tras reconectar: sólo queda el escudo en la bolsa (la espada está equipada)",
+            fullAfter?.Items.Length == 1 &&
+            fullAfter.Items[0] is { DefKey: "item.wooden_shield", Container: ContainerId.WeaponBag });
+
+        var equipAfter = await ReceiveUntil<S2CEquipmentUpdate>(ws2, Opcode.EquipmentUpdate);
+        Check("Tras reconectar: la espada sigue equipada y la fuerza efectiva se mantiene",
+            equipAfter is { StrEffective: 10 } &&
+            equipAfter.Equipped.Any(i => i.DefKey == "item.iron_sword"));
+    }
+
     private static async Task Greet(ClientWebSocket ws)
     {
         await Send(ws, Opcode.Hello, new C2SHello { ProtocolVersion = ProtocolVersion.Current, ClientBuild = "smoke" });
@@ -356,6 +466,38 @@ internal static class Program
         return FrameCodec.TryDecodePayload<S2CAuthResult>(frame, out var result) ? result : null;
     }
 
+    /// <summary>
+    /// Como <see cref="Auth{T}"/>, pero si el cupo de 5 intentos/minuto por IP ya lo ha agotado
+    /// otra prueba de esta misma corrida, espera a que se libere la ventana y reintenta — igual
+    /// que ya hace <c>tools/Epimeteo.WorldBot/Bot.cs</c> desde la Fase 4/5. Todo el conjunto de
+    /// pruebas comparte IP (127.0.0.1): a medida que se añaden más flujos que reconectan, el cupo
+    /// fijo de "esperar 65 s una vez al principio" deja de bastar.
+    /// </summary>
+    private static async Task<S2CAuthResult?> AuthWithRetry<T>(ClientWebSocket ws, Opcode opcode, T payload)
+    {
+        var result = await Auth(ws, opcode, payload);
+        if (result is not { Ok: false, Code: ResultCode.RateLimited })
+        {
+            return result;
+        }
+
+        Console.WriteLine("  ...cupo de intentos por IP agotado por otra prueba; espera 65 s");
+
+        // Con Ping de por medio, no en un solo Task.Delay: 65 s de silencio superan el
+        // IdleTimeoutMs de 30 s de la sesión (docs/01 § Ritmos) y el servidor cerraría la
+        // conexión antes de que diera tiempo a reintentar — mismo fallo que ya se encontró y se
+        // corrigió en tools/Epimeteo.WorldBot/Bot.cs.
+        const int PingEveryMs = 10_000;
+        for (var esperado = 0; esperado < 65_000; esperado += PingEveryMs)
+        {
+            await Task.Delay(Math.Min(PingEveryMs, 65_000 - esperado));
+            await Send(ws, Opcode.Ping, new C2SPing { ClientTimeMs = ServerClock.NowMs });
+            await Receive(ws, TimeSpan.FromSeconds(2)); // Pong; se descarta, sólo sostiene la sesión.
+        }
+
+        return await Auth(ws, opcode, payload);
+    }
+
     /// <summary>Manda <typeparamref name="TReq"/> y decodifica la respuesta si llega con el opcode esperado.</summary>
     private static async Task<TResp?> SendReceive<TReq, TResp>(
         ClientWebSocket ws, Opcode requestOpcode, TReq payload, Opcode expectedResponseOpcode)
@@ -369,6 +511,32 @@ internal static class Program
         }
 
         return FrameCodec.TryDecodePayload<TResp>(frame, out var result) ? result : default;
+    }
+
+    /// <summary>
+    /// Como <see cref="Receive"/>, pero descarta lo que no sea <paramref name="expectedOpcode"/>.
+    /// Hace falta para los mensajes de inventario: una vez <c>InWorld</c> el tick manda
+    /// <c>Snapshot</c>/<c>ZoneFlagsUpdate</c> de fondo, mezclados con lo que se está esperando.
+    /// </summary>
+    private static async Task<T?> ReceiveUntil<T>(ClientWebSocket ws, Opcode expectedOpcode, TimeSpan? espera = null)
+    {
+        var deadline = ServerClock.NowMs + (long)(espera ?? TimeSpan.FromSeconds(5)).TotalMilliseconds;
+
+        while (ServerClock.NowMs < deadline)
+        {
+            var (opcode, frame) = await Receive(ws, TimeSpan.FromMilliseconds(500));
+            if (opcode == Opcode.None)
+            {
+                continue; // Timeout corto de esta lectura; se reintenta hasta el plazo grande.
+            }
+
+            if (opcode == expectedOpcode)
+            {
+                return FrameCodec.TryDecodePayload<T>(frame, out var result) ? result : default;
+            }
+        }
+
+        return default;
     }
 
     /// <summary>

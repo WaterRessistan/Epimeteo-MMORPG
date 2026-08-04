@@ -1,0 +1,9 @@
+{
+  "key": "item.copper_ring",
+  "displayName": "Anillo de cobre",
+  "type": "Armor",
+  "maxStack": 1,
+  "equipCategory": "Ring",
+  "bonusInt": 1,
+  "bonusMp": 5
+}

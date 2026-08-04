@@ -7,7 +7,7 @@ namespace Epimeteo.Server.World;
 /// <summary>
 /// Ata el ciclo de vida del bucle de simulación al del host: arranca con el servidor y, al parar,
 /// expulsa a todo el mundo con <see cref="KickReason.ServerShutdown"/>, detiene el hilo y vuelca
-/// las posiciones pendientes.
+/// el estado pendiente (posición e inventario).
 /// </summary>
 public sealed class GameLoopService : IHostedService
 {
@@ -38,8 +38,9 @@ public sealed class GameLoopService : IHostedService
         await Task.Delay(250, cancellationToken).ConfigureAwait(false);
         _loop.Stop();
 
-        // Con el bucle ya parado nadie más toca las entidades: es el momento de volcar todas las
-        // posiciones. Sin esto, un `systemctl restart` perdería hasta 30 s de movimiento.
-        _world.FlushAllPositions();
+        // Con el bucle ya parado nadie más toca las entidades: es el momento de volcar todo el
+        // estado pendiente (posición e inventario). Sin esto, un `systemctl restart` perdería
+        // hasta 30 s de movimiento y cualquier mutación de inventario sin encolar todavía.
+        _world.FlushAllState();
     }
 }

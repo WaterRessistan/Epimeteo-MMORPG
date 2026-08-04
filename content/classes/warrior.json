@@ -6,5 +6,10 @@
   "baseVit": 6,
   "baseDex": 4,
   "baseHp": 120,
-  "baseMp": 20
+  "baseMp": 20,
+  "startingItems": [
+    { "defKey": "item.iron_sword", "quantity": 1 },
+    { "defKey": "item.wooden_shield", "quantity": 1 },
+    { "defKey": "item.health_potion", "quantity": 2 }
+  ]
 }

@@ -1,22 +1,22 @@
 # STATUS — Epimeteo MMORPG
 
-**Última actualización:** 2026-08-04 · **Fase actual:** 5 COMPLETA (despliegue mínimo) →
-arranca Fase 6. El juego está en producción de verdad: `wss://epimeteo.waterressistan.duckdns.org/ws`
+**Última actualización:** 2026-08-05 · **Fase actual:** 6 COMPLETA (inventario y equipamiento) →
+arranca Fase 7. Desplegado en producción: `wss://epimeteo.waterressistan.duckdns.org/ws`
 
 ## Estado
 
 | Área | Estado |
 |---|---|
 | Diseño y arquitectura | ✅ Cerrado (`docs/00`, `01`, `02`, `03`) |
-| Repositorio git | ✅ Fases 0–4 commiteadas; Fase 5 lista para commitear |
+| Repositorio git | ✅ Fases 0–5 commiteadas; Fase 6 lista para commitear |
 | Solución .NET | ✅ `Epimeteo.sln` (Shared + Server + Server.Tests + Shared.Tests + tools) |
-| Protocolo | ✅ **Versión 2**. Envelope, opcodes, tabla de estados, códec MessagePack; auth, los 5 opcodes de personaje y los de mundo (`InputState`, `EntitySpawn`, `EntityDespawn`, `Snapshot`, `ZoneFlagsUpdate`) tipados |
-| Servidor | ✅ Lo anterior + **el tick simula de verdad**: `Zone` con entidades, colas de input, `CellGrid`/`AoiSystem`, `SnapshotBuilder`, `MapCatalog` y guardado de posición fuera del tick |
-| Cliente Godot | ⚠️ Conecta, handshake, login/registro, `CharacterSelect` y **`World.tscn`** (predicción, reconciliación, interpolación, cámara, HUD, simulador de latencia). Compila sin warnings, pero **no se ha ejecutado nunca**: no hay Godot en este servidor headless |
-| Tests | ✅ **84/84 compartidos + 58/58 servidor en verde** (0 saltados) |
-| Base de datos | ✅ Postgres 16.14; `0001_init.sql` + `0002_character_name_format.sql` aplicadas |
-| Contenido (`content/`) | ✅ `content/classes/*.json` + `content/maps/map.village.json` (96×96, colisión y regiones) |
-| Despliegue | ✅ **En producción**: `epimeteo.service` (systemd, usuario dedicado, `Restart=always`, `ProtectSystem=strict`), nginx + TLS propio en `epimeteo.waterressistan.duckdns.org`, backup diario de Postgres por timer |
+| Protocolo | ✅ **Versión 2** (sin cambios de forma: los mensajes de inventario ya estaban reservados desde la Fase 1). Envelope, opcodes, tabla de estados, códec MessagePack; auth, personajes, mundo **e inventario/equipo** (`InvMove`, `InvUse`, `InvDrop`, `Equip`, `Unequip`, `InventoryFull`, `InventoryDelta`, `EquipmentUpdate`, `SystemMessage`) tipados |
+| Servidor | ✅ Lo anterior + **inventario autoritativo en memoria** (`InventorySystem`, puro, sin I/O), persistido como instantánea completa fuera del tick (`InventorySaver`) |
+| Cliente Godot | ⚠️ Conecta, handshake, login/registro, `CharacterSelect`, `World.tscn` y **overlay de inventario** (tecla `I`: bolsas con pestañas, equipo, drag & drop, tooltips). Compila sin warnings, pero **no se ha ejecutado nunca**: no hay Godot en este servidor headless |
+| Tests | ✅ **105/105 compartidos + 99/99 servidor en verde** (0 saltados) |
+| Base de datos | ✅ Postgres 16.14; `0001_init.sql` + `0002_character_name_format.sql` aplicadas (`item_instances` ya existía desde la Fase 2, sin migración nueva) |
+| Contenido (`content/`) | ✅ `content/classes/*.json` (+`startingItems`) + `content/maps/map.village.json` + **`content/items/*.json`** (7 ítems: 2 armas, 2 armaduras, consumible, material, semilla) |
+| Despliegue | ✅ **En producción**: `epimeteo.service` (systemd, usuario dedicado, `Restart=always`, `ProtectSystem=strict`), nginx + TLS propio en `epimeteo.waterressistan.duckdns.org`, backup diario de Postgres por timer. Fase 6 ya desplegada con `deploy/publish.sh` y verificada contra el servicio real |
 
 ## Entorno
 
@@ -342,24 +342,106 @@ Criterio de aceptación de `FASE-05 §6`:
    original en `accounts`, `characters`, `item_instances`.
 6. ✅ `docs/00-arquitectura.md §5` actualizado, ya no dice "pendiente de confirmar".
 
+## Hecho en la Fase 6 — Inventario y equipamiento
+
+Plan completo en `docs/fases/FASE-06-inventario.md`. El diseño de protocolo, esquema de BD y
+códigos de error ya estaba cerrado desde las Fases 1–2 (opcodes `0x0030–0x0034`/`0x8030–0x8033`,
+`item_instances`, `ResultCode` 300–305, todos reservados sin usar); esta fase fue implementación
+sobre ese diseño, sin reabrir el protocolo (`ProtocolVersion` se queda en 2).
+
+- `content/items/*.json`: 7 ítems (`iron_sword`, `wooden_shield` — Weapon, van en la bolsa de
+  armas los dos, "arma" en sentido amplio de equipable de combate—, `leather_chest`,
+  `copper_ring` — Armor—, `health_potion` — Consumable, cura—, `iron_ore` — Material—,
+  `wheat_seed` — Seed, sin lógica de siembra todavía). `content/classes/*.json` gana
+  `startingItems`: sin tiendas ni loot, es la única forma de que un personaje nuevo tenga algo
+  que mover o equipar.
+- `Shared/Data/`: `ItemType`, `EquipCategory`, `EquipSlot`, `ContainerId`, `ItemDefinition`,
+  `ItemLoader` (parseo puro, testeable) + `ItemCatalog` (directorio, como `MapCatalog`, pero
+  vive en `Shared` porque el cliente también necesita el catálogo completo — un mapa el cliente
+  sólo carga el suyo, un inventario puede tener cualquier combinación de ítems a la vez),
+  `EquipSlots` (categoría → huecos físicos; `Ring` es el único caso de "uno de varios",
+  resuelve a `Ring1` **o** `Ring2`), `InventoryConstants` (capacidades de bolsa, la regla de
+  "una arma sólo entra en la bolsa de armas" en una función).
+- `Server/Inventory/`: `ItemStack` (mutable, en memoria, sin id de Postgres — no hace falta:
+  ver persistencia abajo), `PlayerInventory`, `InventorySystem` (estático y puro dado
+  inventario+catálogo, mismo espíritu que `MovementSystem`: mover/apilar/dividir, tirar, usar,
+  equipar/desequipar, y `ComputeDerivedStats` para `HpMax`/`MpMax`/stats efectivos — sin
+  daño/defensa, eso es Fase 9 y no hay combate contra qué calcularlo).
+- **Persistencia: instantánea completa, no un log de diffs.** `InventorySaver` recibe el
+  inventario **entero** de un personaje tras cada mutación y hace `DELETE`+`INSERT` en
+  transacción — igual que `CharacterPositionSaver` manda el valor actual completo, no un delta.
+  Por eso `DropOldest` en la cola es tan seguro para inventario como para posición: perder una
+  instantánea vieja no importa si la nueva ya la contiene entera.
+- `SessionMessageHandler.CharSelect` carga `item_instances` (containers 0–3) igual que carga la
+  fila `characters`; `Zone.Join` ya no hace falta tocarlo — `GameWorld.HandleJoin` manda
+  `InventoryFull`+`EquipmentUpdate` tras el join. `GameWorld.DrainMessages` gana los 5 opcodes de
+  inventario, resueltos contra `PlayerInventory` en memoria, sin I/O en el tick.
+- `S2CSystemMessage` (opcode reservado desde la Fase 1, sin tipar hasta ahora): fallo de
+  validación → no hay `InvResult` dedicado (a diferencia de `ShopResult`, un cliente honesto no
+  debería intentar un movimiento inválido nunca) → `SystemMessage` con severidad+clave i18n.
+- **Cliente Godot:** `Inventory/` nuevo (`InventoryState`, `ItemSlot` con drag&drop nativo de
+  Godot + tooltip, `EquipmentPanel`, `InventoryScreen`, overlay con tecla `I`). Sin arte: texto y
+  rectángulos, como `WorldRenderer`. `NetClient` gana los 4 eventos y los 5 `Send*`.
+
+### Fallos reales encontrados verificando de punta a punta (no en teoría)
+
+- **Ninguno en el servidor.** El diseño de persistencia (instantánea completa) resultó correcto
+  a la primera: verificado con `psql` tras el flujo normal y tras un **reinicio real** del
+  servicio de producción con un ítem recién equipado — sobrevivió exacto.
+- **Dos en las propias herramientas de verificación**, ambos ya vistos en fases anteriores y
+  reconocidos tarde: el flujo de reconexión de `SmokeClient` no esperó a que la cola asíncrona de
+  `InventorySaver` drenara antes de leer Postgres de nuevo (mismo problema que ya resolvió
+  `WorldBot` para la posición en la Fase 4 — un `Task.Delay(1500)` antes de reconectar). Y al
+  añadir el nuevo flujo de inventario al `SmokeClient`, el cupo fijo de "esperar 65 s una vez" ya
+  no bastaba para el total de intentos de login de toda la suite: hubo que darle a `SmokeClient`
+  el mismo reintento-con-espera-y-keepalive que ya tenía `WorldBot` (`AuthWithRetry`, con `Ping`
+  cada 10 s durante la espera para no caer por `IdleTimeoutMs`).
+
+### Verificación Fase 6 (esta sesión, contra el servicio de producción real)
+
+Desplegado con `deploy/publish.sh` (build+test+publish+reinicio, el mismo de la Fase 5) antes de
+verificar — el juego en `wss://epimeteo.waterressistan.duckdns.org/ws` ya corre este código.
+
+1. ✅ `dotnet build` sin warnings; `dotnet test`: **105/105 compartidos + 99/99 servidor**
+   (`InventorySystemTests` es el grueso: 26 casos puros sobre `PlayerInventory` en memoria).
+2. ✅ `SmokeClient` ampliado con el flujo completo de inventario: kit inicial de un guerrero
+   recién creado, mover, apilar, equipar (con el `EquipmentUpdate` reflejando `StrEffective`
+   subido por el bono del arma), un `Equip` inválido (categoría equivocada) que **no cambia
+   nada** y llega `SystemMessage`, usar una poción, tirar la última — y todo sobrevive a
+   desconectar y reconectar. 45/45 comprobaciones en verde (incluye lo heredado de las Fases
+   1–3).
+3. ✅ Reinicio real de `epimeteo.service` con un ítem recién equipado: confirmado en `psql` que
+   el estado exacto (espada equipada, escudo en su bolsa) sobrevivió — es la ruta de
+   `GameLoopService.StopAsync` → `GameWorld.FlushAllState()` (renombrado de
+   `FlushAllPositions`, ahora también vuelca inventario), no sólo el guardado por mutación.
+
 ## Siguiente sesión
 
-**Fase 6 — Inventario y equipamiento · Sonnet.** Siguiente en `docs/03-roadmap-fases.md`.
+**Fase 7 — Tiendas y armero · Sonnet.** Siguiente en `docs/03-roadmap-fases.md`. Va a necesitar
+`CurrencyUpdate` (`0x8033`, reservado desde la Fase 1, todavía sin tipar) y va a reutilizar
+`InventorySystem`/`ItemCatalog`/`InventoryConstants` de la Fase 6 tal cual para meter y sacar
+ítems de la bolsa del comprador.
 
 **Pendiente aparte, en cuanto haya una máquina con entorno gráfico:** abrir `client/project.godot`
-en Godot 4.5 y comprobar el punto 7 del criterio de la Fase 4 — dos clientes en el mismo mapa,
-viéndose moverse, movimiento propio inmediato y las paredes parando. El HUD da los números
-(correcciones y error máximo) sin herramientas. Con `--lag-ms=150` se reproduce el caso jugable.
-Es lo único de la Fase 4 que no se ha visto funcionar. Ahora que el juego está en producción, el
-cliente puede apuntar a `wss://epimeteo.waterressistan.duckdns.org/ws` en vez de `127.0.0.1`.
+en Godot 4.5 y comprobar el punto 7 del criterio de la Fase 4 (dos clientes viéndose mover) **y**
+el overlay de inventario de la Fase 6 (drag & drop de verdad, tecla `I`). El HUD de mundo da los
+números de predicción sin herramientas; el inventario no tiene ese instrumento — hay que
+mirarlo. Ahora que el juego está en producción, el cliente puede apuntar a
+`wss://epimeteo.waterressistan.duckdns.org/ws` en vez de `127.0.0.1`.
 
-**Pendiente de decidir, no técnico:** los datos de prueba acumulados en la BD (cuentas `Bot*` de
-`SmokeClient`/`WorldBot` a lo largo de las Fases 1–5) — si el juego se va a anunciar de verdad,
-alguien tiene que decidir si se limpian antes. Esta sesión no ha borrado nada.
+**Pendiente de decidir, no técnico:** los datos de prueba acumulados en la BD (cuentas `Bot*`/
+`smoke_*` de `SmokeClient`/`WorldBot` a lo largo de las Fases 1–6) — si el juego se va a anunciar
+de verdad, alguien tiene que decidir si se limpian antes. Esta sesión no ha borrado nada.
 
 **Verificación real que sólo puede hacer un humano:** conectar desde un móvil en datos 4G (no
 en la red del servidor) a `wss://epimeteo.waterressistan.duckdns.org/ws` con el cliente Godot, en
 cuanto exista una build para probarlo.
+
+**Detalle menor visto de pasada, no de esta fase:** `LoginAttemptRepositoryTests.
+CountRecentAsync_NoMezclaIntentosDeOtraIp` (Fase 2) es ocasionalmente flaky —
+`UniqueTestIp()` sortea sobre sólo 253 valores (`203.0.113.2-254`) sin excluir los ya usados en
+la misma corrida, así que dos tests concurrentes pueden chocar de IP por puro azar. No es un
+fallo de esta fase (pasa 100% en aislado); se deja anotado para quien le toque tocar esos tests.
 
 Recordatorio de entorno: este servidor de producción ya tiene `dotnet`, Postgres y el rol
 `epimeteo` listos; no hace falta repetir la instalación en próximas sesiones aquí. La contraseña
@@ -385,4 +467,8 @@ DOTNET_ENVIRONMENT=Development Epimeteo__LoginAttemptsPerMinute=200 dotnet run -
 dotnet run --project tools/Epimeteo.WorldBot -- --bots 10
 
 ~/godot/godot --path client            # editor; no hay Godot en este servidor headless
+
+# Desplegar a producción y verificar de punta a punta (incluye el flujo de inventario)
+bash deploy/publish.sh
+dotnet run --project tools/Epimeteo.SmokeClient
 ```

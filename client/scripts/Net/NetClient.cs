@@ -1,4 +1,5 @@
 using System;
+using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Net.Messages;
 using Epimeteo.Shared.Simulation;
@@ -66,6 +67,18 @@ public partial class NetClient : Node
 
     /// <summary>Se dispara al cruzar de región, con los flags que decide el servidor.</summary>
     public event Action<S2CZoneFlagsUpdate>? ZoneFlagsUpdateReceived;
+
+    /// <summary>Se dispara una vez al entrar al mundo, con los contenedores 0/1/2 completos.</summary>
+    public event Action<S2CInventoryFull>? InventoryFullReceived;
+
+    /// <summary>Se dispara tras cada mutación de inventario con éxito.</summary>
+    public event Action<S2CInventoryDelta>? InventoryDeltaReceived;
+
+    /// <summary>Se dispara al entrar al mundo y tras cada <c>Equip</c>/<c>Unequip</c> con éxito.</summary>
+    public event Action<S2CEquipmentUpdate>? EquipmentUpdateReceived;
+
+    /// <summary>Se dispara con avisos sin opcode dedicado propio (FASE-06 §5): p. ej. un <c>Equip</c> rechazado.</summary>
+    public event Action<S2CSystemMessage>? SystemMessageReceived;
 
     /// <summary>Estado actual de la conexión.</summary>
     public ConnectionStatus Status { get; private set; } = ConnectionStatus.Disconnected;
@@ -266,6 +279,32 @@ public partial class NetClient : Node
         DtMs = SimulationConstants.TickDtMs,
     });
 
+    /// <summary>Mover (o apilar, o dividir) un ítem entre dos huecos del inventario propio.</summary>
+    public void SendInvMove(ContainerId fromContainer, byte fromSlot, ContainerId toContainer, byte toSlot, int quantity) =>
+        Send(Opcode.InvMove, new C2SInvMove
+        {
+            FromContainer = fromContainer,
+            FromSlot = fromSlot,
+            ToContainer = toContainer,
+            ToSlot = toSlot,
+            Quantity = quantity,
+        });
+
+    /// <summary>Usar un ítem (por ahora sólo consumibles de curación).</summary>
+    public void SendInvUse(ContainerId container, byte slot) =>
+        Send(Opcode.InvUse, new C2SInvUse { Container = container, Slot = slot });
+
+    /// <summary>Tirar (destruir) parte o todo un stack. Sin saco de loot: no queda nada en el mundo.</summary>
+    public void SendInvDrop(ContainerId container, byte slot, int quantity) =>
+        Send(Opcode.InvDrop, new C2SInvDrop { Container = container, Slot = slot, Quantity = quantity });
+
+    /// <summary>Equipar el ítem de <c>(container, slot)</c> en un hueco de equipo concreto.</summary>
+    public void SendEquip(ContainerId container, byte slot, EquipSlot equipSlot) =>
+        Send(Opcode.Equip, new C2SEquip { Container = container, Slot = slot, EquipSlot = equipSlot });
+
+    /// <summary>Desequipar, de vuelta a la bolsa que le toque por su tipo.</summary>
+    public void SendUnequip(EquipSlot equipSlot) => Send(Opcode.Unequip, new C2SUnequip { EquipSlot = equipSlot });
+
     private void PumpIncoming()
     {
         var now = ServerClock.NowMs;
@@ -402,6 +441,38 @@ public partial class NetClient : Node
                 if (FrameCodec.TryDecodePayload<S2CZoneFlagsUpdate>(frame, out var zone) && zone is not null)
                 {
                     ZoneFlagsUpdateReceived?.Invoke(zone);
+                }
+
+                break;
+
+            case Opcode.InventoryFull:
+                if (FrameCodec.TryDecodePayload<S2CInventoryFull>(frame, out var invFull) && invFull is not null)
+                {
+                    InventoryFullReceived?.Invoke(invFull);
+                }
+
+                break;
+
+            case Opcode.InventoryDelta:
+                if (FrameCodec.TryDecodePayload<S2CInventoryDelta>(frame, out var invDelta) && invDelta is not null)
+                {
+                    InventoryDeltaReceived?.Invoke(invDelta);
+                }
+
+                break;
+
+            case Opcode.EquipmentUpdate:
+                if (FrameCodec.TryDecodePayload<S2CEquipmentUpdate>(frame, out var equipUpdate) && equipUpdate is not null)
+                {
+                    EquipmentUpdateReceived?.Invoke(equipUpdate);
+                }
+
+                break;
+
+            case Opcode.SystemMessage:
+                if (FrameCodec.TryDecodePayload<S2CSystemMessage>(frame, out var sysMsg) && sysMsg is not null)
+                {
+                    SystemMessageReceived?.Invoke(sysMsg);
                 }
 
                 break;

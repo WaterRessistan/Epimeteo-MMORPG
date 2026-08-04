@@ -6,5 +6,10 @@
   "baseVit": 3,
   "baseDex": 5,
   "baseHp": 70,
-  "baseMp": 100
+  "baseMp": 100,
+  "startingItems": [
+    { "defKey": "item.copper_ring", "quantity": 1 },
+    { "defKey": "item.health_potion", "quantity": 2 },
+    { "defKey": "item.iron_ore", "quantity": 3 }
+  ]
 }

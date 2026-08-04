@@ -1,0 +1,8 @@
+{
+  "key": "item.iron_sword",
+  "displayName": "Espada de hierro",
+  "type": "Weapon",
+  "maxStack": 1,
+  "equipCategory": "MainHand",
+  "bonusStr": 2
+}

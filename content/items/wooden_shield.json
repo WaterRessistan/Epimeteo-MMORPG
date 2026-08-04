@@ -1,0 +1,8 @@
+{
+  "key": "item.wooden_shield",
+  "displayName": "Escudo de madera",
+  "type": "Weapon",
+  "maxStack": 1,
+  "equipCategory": "OffHand",
+  "bonusVit": 1
+}

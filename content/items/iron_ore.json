@@ -1,0 +1,6 @@
+{
+  "key": "item.iron_ore",
+  "displayName": "Mineral de hierro",
+  "type": "Material",
+  "maxStack": 99
+}
