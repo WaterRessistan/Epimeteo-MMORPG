@@ -65,6 +65,7 @@ public static class ItemLoader
             BonusHp = raw.BonusHp,
             BonusMp = raw.BonusMp,
             HealAmount = raw.HealAmount,
+            DurabilityMax = raw.DurabilityMax,
         };
     }
 
@@ -122,5 +123,7 @@ public static class ItemLoader
         public int BonusMp { get; init; }
 
         public int HealAmount { get; init; }
+
+        public int? DurabilityMax { get; init; }
     }
 }

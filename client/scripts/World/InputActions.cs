@@ -18,4 +18,7 @@ public static class InputActions
 
     /// <summary>Andar hacia el este (D o flecha derecha).</summary>
     public const string MoveRight = "move_right";
+
+    /// <summary>Interactuar con el NPC más cercano (E): abre su tienda, o la cierra si ya está abierta.</summary>
+    public const string Interact = "interact";
 }

@@ -39,4 +39,13 @@ public sealed record ItemDefinition
 
     /// <summary>Vida que restaura al usarse con <c>InvUse</c>. <c>0</c> = no es consumible de curación.</summary>
     public int HealAmount { get; init; }
+
+    /// <summary>
+    /// Durabilidad máxima de fábrica, o <c>null</c> si el ítem no se desgasta
+    /// (<c>item_instances.durability_max</c>, FASE-07 §4). Un stack nuevo de este ítem nace con
+    /// <c>Durability = DurabilityMax</c>. Nada reduce durabilidad todavía (sin combate ni
+    /// herramientas de granja) — sólo el armero de la Fase 7 la restaura, y sólo se puede probar
+    /// manipulando un ítem a mano hasta que exista una fuente real de desgaste.
+    /// </summary>
+    public int? DurabilityMax { get; init; }
 }

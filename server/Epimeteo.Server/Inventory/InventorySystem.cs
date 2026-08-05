@@ -156,6 +156,114 @@ public static class InventorySystem
     }
 
     /// <summary>Tirar (destruir) parte o todo un stack. Sin saco de loot: no deja nada en el mundo (FASE-06 §1).</summary>
+    /// <summary>
+    /// Añadir un stack que no viene de ningún hueco (comprado en una tienda, botín futuro): al
+    /// contrario que <see cref="TryMove"/>, aquí no hay origen que vaciar. Apila primero contra
+    /// lo que ya haya del mismo ítem, y sólo abre huecos nuevos con lo que sobre.
+    /// <para>
+    /// La capacidad se comprueba <b>antes</b> de tocar nada: si no cupiera todo a mitad de
+    /// apilar, dejar unos stacks ya crecidos y fallar a medias rompería la garantía de "si falla,
+    /// no cambia nada" que tienen el resto de operaciones (FASE-07 §5, `ShopSystem.TryBuy`).
+    /// </para>
+    /// </summary>
+    public static InventoryOpResult TryAddNew(
+        PlayerInventory inventory, ItemCatalog catalog, string defKey, int quantity,
+        int? durability = null, int? durabilityMax = null, byte quality = 0)
+    {
+        if (quantity <= 0)
+        {
+            return InventoryOpResult.Fail(ResultCode.NotEnoughItems);
+        }
+
+        if (!catalog.TryGet(defKey, out var def))
+        {
+            return InventoryOpResult.Fail(ResultCode.UnknownError);
+        }
+
+        var container = InventoryConstants.AllowedContainer(def.Type);
+
+        var capacity = 0;
+        if (def.MaxStack > 1)
+        {
+            foreach (var stack in inventory.Stacks)
+            {
+                if (stack.Container == container && stack.DefKey == defKey)
+                {
+                    capacity += def.MaxStack - stack.Quantity;
+                }
+            }
+        }
+
+        var usedSlots = 0;
+        foreach (var stack in inventory.Stacks)
+        {
+            if (stack.Container == container)
+            {
+                usedSlots++;
+            }
+        }
+
+        capacity += (InventoryConstants.CapacityOf(container) - usedSlots) * def.MaxStack;
+
+        if (capacity < quantity)
+        {
+            return InventoryOpResult.Fail(ResultCode.InventoryFull);
+        }
+
+        var remaining = quantity;
+        var touched = new List<SlotRef>();
+
+        if (def.MaxStack > 1)
+        {
+            foreach (var stack in inventory.Stacks)
+            {
+                if (remaining <= 0)
+                {
+                    break;
+                }
+
+                if (stack.Container != container || stack.DefKey != defKey)
+                {
+                    continue;
+                }
+
+                var room = def.MaxStack - stack.Quantity;
+                if (room <= 0)
+                {
+                    continue;
+                }
+
+                var add = Math.Min(room, remaining);
+                stack.Quantity += add;
+                remaining -= add;
+                touched.Add(new SlotRef(stack.Container, stack.Slot));
+            }
+        }
+
+        while (remaining > 0)
+        {
+            // Ya se comprobó arriba que cabe entero: FindEmptySlot no puede fallar aquí.
+            var freeSlot = inventory.FindEmptySlot(container)!.Value;
+            var amount = Math.Min(remaining, def.MaxStack);
+
+            inventory.Add(new ItemStack
+            {
+                DefKey = defKey,
+                Container = container,
+                Slot = freeSlot,
+                Quantity = amount,
+                Durability = durability,
+                DurabilityMax = durabilityMax,
+                Quality = quality,
+            });
+
+            touched.Add(new SlotRef(container, freeSlot));
+            remaining -= amount;
+        }
+
+        return InventoryOpResult.Success([.. touched]);
+    }
+
     public static InventoryOpResult TryDrop(PlayerInventory inventory, ContainerId container, byte slot, int quantity)
     {
         if (container == ContainerId.Equipped)

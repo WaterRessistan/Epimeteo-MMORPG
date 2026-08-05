@@ -25,6 +25,7 @@ namespace Epimeteo.Server.World;
 /// <param name="StatVit">Vitalidad base guardada.</param>
 /// <param name="StatDex">Destreza base guardada.</param>
 /// <param name="Items">Contenedores 0–3 cargados de <c>item_instances</c> (FASE-06 §2 D1).</param>
+/// <param name="Gold">Oro guardado (columna <c>gold</c> de <c>characters</c>, Fase 7).</param>
 public sealed record WorldJoinRequest(
     int EntityId,
     long CharacterId,
@@ -42,4 +43,5 @@ public sealed record WorldJoinRequest(
     int StatInt,
     int StatVit,
     int StatDex,
-    IReadOnlyList<ItemStack> Items);
+    IReadOnlyList<ItemStack> Items,
+    long Gold);

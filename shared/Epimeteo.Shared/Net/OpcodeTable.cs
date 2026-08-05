@@ -66,6 +66,7 @@ public static class OpcodeTable
             new(Opcode.ShopBuy, OpcodeFamily.Shop, SessionState.InWorld),
             new(Opcode.ShopSell, OpcodeFamily.Shop, SessionState.InWorld),
             new(Opcode.ShopClose, OpcodeFamily.Shop, SessionState.InWorld),
+            new(Opcode.ShopRepair, OpcodeFamily.Shop, SessionState.InWorld),
 
             new(Opcode.FarmPlant, OpcodeFamily.Farm, SessionState.InWorld),
             new(Opcode.FarmWater, OpcodeFamily.Farm, SessionState.InWorld),

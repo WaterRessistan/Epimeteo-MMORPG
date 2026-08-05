@@ -37,6 +37,14 @@ public enum Opcode : ushort
     ShopSell = 0x0042,
     ShopClose = 0x0043,
 
+    /// <summary>
+    /// Añadido en la Fase 7: el catálogo original de la Fase 1 reservó Open/Buy/Sell/Close pero
+    /// no reparar (hueco real, FASE-07-tiendas.md §2 D6). No sube <c>ProtocolVersion</c> — la
+    /// regla de <c>docs/01</c> liga la versión a cambiar la forma de un mensaje ya existente, no
+    /// a añadir uno nuevo (mismo criterio que los opcodes de inventario de la Fase 6).
+    /// </summary>
+    ShopRepair = 0x0044,
+
     FarmPlant = 0x0050,
     FarmWater = 0x0051,
     FarmHarvest = 0x0052,

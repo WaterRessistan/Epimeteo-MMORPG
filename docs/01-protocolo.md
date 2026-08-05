@@ -65,6 +65,7 @@ log + cierre inmediato. No hay excepciones a esta regla.
 | 0x0041 | `ShopBuy` | InWorld | shopSlot, cantidad, precioEsperado |
 | 0x0042 | `ShopSell` | InWorld | container, slot, cantidad, precioEsperado |
 | 0x0043 | `ShopClose` | InWorld | — |
+| 0x0044 | `ShopRepair` | InWorld | container, slot — **añadido en la Fase 7**, hueco real: el catálogo original no reservó nada para reparar |
 | 0x0050 | `FarmPlant` | InWorld | tileX, tileY, container, slot (semilla) |
 | 0x0051 | `FarmWater` | InWorld | tileX, tileY |
 | 0x0052 | `FarmHarvest` | InWorld | tileX, tileY |

@@ -54,6 +54,16 @@ internal sealed class Bot : IAsyncDisposable
     /// <summary>Patrón de movimiento activo. El driver lo cambia por fases.</summary>
     public MovementPattern Pattern { get; set; } = MovementPattern.Quieto;
 
+    /// <summary>
+    /// Si no es <c>null</c>, manda hacia esta posición por encima de <see cref="Pattern"/>
+    /// (FASE-07 §9: hace falta moverse de verdad hasta un NPC, no sólo los patrones fijos de la
+    /// Fase 4). Se pone a <c>null</c> sola en cuanto <see cref="ServerPos"/> ya está dentro de
+    /// <see cref="WalkTargetToleranceTiles"/>.
+    /// </summary>
+    public Vec2? WalkTarget { get; set; }
+
+    private const float WalkTargetToleranceTiles = 0.3f;
+
     /// <summary>Inputs que manda por tick. &gt; 1 es un cliente parcheado para ir más rápido.</summary>
     public int InputsPerTick { get; set; } = 1;
 
@@ -63,6 +73,9 @@ internal sealed class Bot : IAsyncDisposable
     public ClientPrediction? Prediction { get; private set; }
 
     public int MyEntityId { get; private set; }
+
+    /// <summary>Fila de <c>characters</c> del personaje conectado (FASE-07 §9: hace falta para manipular su estado por SQL entre dos corridas).</summary>
+    public long CharacterId { get; private set; }
 
     public S2CWorldEnter? WorldEnter { get; private set; }
 
@@ -82,6 +95,21 @@ internal sealed class Bot : IAsyncDisposable
     public List<(string Region, ZoneFlags Flags)> ZoneUpdates { get; } = [];
 
     public KickReason? Kicked { get; private set; }
+
+    /// <summary>Todo lo que se ha visto aparecer, por id — para encontrar el NPC de una tienda por su DefKey (FASE-07 §9).</summary>
+    public Dictionary<int, EntitySpawnInfo> KnownEntities { get; } = [];
+
+    /// <summary>Oro actual, según el último <c>CurrencyUpdate</c>.</summary>
+    public long Gold { get; private set; }
+
+    /// <summary>Último <c>ShopData</c> recibido (al abrir una tienda, o tras un restock).</summary>
+    public S2CShopData? LastShopData { get; private set; }
+
+    /// <summary>Todos los <c>ShopResult</c> recibidos en la fase actual (normalmente fallos: el éxito no manda esto).</summary>
+    public List<S2CShopResult> ShopResults { get; } = [];
+
+    /// <summary>Últimos cambios de inventario vistos, por hueco — para comprobar que reparar subió la durabilidad.</summary>
+    public Dictionary<(ContainerId Container, byte Slot), ItemStackInfo?> LastInventoryChanges { get; } = [];
 
     public int Corrections => Prediction?.Corrections ?? 0;
 
@@ -130,6 +158,7 @@ internal sealed class Bot : IAsyncDisposable
             characterId = created.Character.Id;
         }
 
+        CharacterId = characterId;
         await SendNowAsync(Opcode.CharSelect, new C2SCharSelect { CharacterId = characterId });
         var enter = await ExpectAsync<S2CWorldEnter>(Opcode.WorldEnter)
             ?? throw new InvalidOperationException($"{Username}: sin WorldEnter.");
@@ -142,6 +171,7 @@ internal sealed class Bot : IAsyncDisposable
 
         WorldEnter = enter;
         MyEntityId = enter.MyEntityId;
+        Gold = enter.Stats.Gold;
         ServerPos = new Vec2(enter.SpawnX, enter.SpawnY);
         Prediction = new ClientPrediction(_map.Collision, MoveState.AtRest(ServerPos, enter.Facing));
 
@@ -274,7 +304,12 @@ internal sealed class Bot : IAsyncDisposable
         ZoneUpdates.Clear();
         ServerDistance = 0f;
         Snapshots = 0;
+        ShopResults.Clear();
+        LastInventoryChanges.Clear();
     }
+
+    /// <summary>Manda un mensaje de inmediato, sin pasar por el simulador de latencia (acciones discretas, no movimiento).</summary>
+    public void SendNow<T>(Opcode opcode, T payload) => _outbound.Writer.TryWrite(FrameCodec.Encode(opcode, payload));
 
     private void Handle(byte[] frame)
     {
@@ -291,6 +326,31 @@ internal sealed class Bot : IAsyncDisposable
 
             case Opcode.EntitySpawn when FrameCodec.TryDecodePayload<S2CEntitySpawn>(frame, out var spawn) && spawn is not null:
                 Spawned.AddRange(spawn.Entities.Select(entity => entity.Id));
+                foreach (var entity in spawn.Entities)
+                {
+                    KnownEntities[entity.Id] = entity;
+                }
+
+                break;
+
+            case Opcode.CurrencyUpdate when FrameCodec.TryDecodePayload<S2CCurrencyUpdate>(frame, out var currency) && currency is not null:
+                Gold = currency.Gold;
+                break;
+
+            case Opcode.ShopData when FrameCodec.TryDecodePayload<S2CShopData>(frame, out var shopData) && shopData is not null:
+                LastShopData = shopData;
+                break;
+
+            case Opcode.ShopResult when FrameCodec.TryDecodePayload<S2CShopResult>(frame, out var shopResult) && shopResult is not null:
+                ShopResults.Add(shopResult);
+                break;
+
+            case Opcode.InventoryDelta when FrameCodec.TryDecodePayload<S2CInventoryDelta>(frame, out var delta) && delta is not null:
+                foreach (var change in delta.Changes)
+                {
+                    LastInventoryChanges[(change.Container, change.Slot)] = change.Item;
+                }
+
                 break;
 
             case Opcode.EntityDespawn when FrameCodec.TryDecodePayload<S2CEntityDespawn>(frame, out var despawn) && despawn is not null:
@@ -343,6 +403,20 @@ internal sealed class Bot : IAsyncDisposable
     /// <summary>Dirección del patrón activo en este instante.</summary>
     private (sbyte X, sbyte Y) Direction(long nowMs)
     {
+        if (WalkTarget is { } target)
+        {
+            var dx = target.X - ServerPos.X;
+            var dy = target.Y - ServerPos.Y;
+
+            if ((dx * dx) + (dy * dy) <= WalkTargetToleranceTiles * WalkTargetToleranceTiles)
+            {
+                WalkTarget = null;
+                return (0, 0);
+            }
+
+            return ((sbyte)Math.Sign(dx), (sbyte)Math.Sign(dy));
+        }
+
         var elapsed = nowMs - PatternStartMs;
 
         return Pattern switch

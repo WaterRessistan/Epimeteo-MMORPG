@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Epimeteo.Client.Net;
+using Epimeteo.Client.Shop;
 using Epimeteo.Client.Ui;
 using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
@@ -17,6 +18,15 @@ namespace Epimeteo.Client.World;
 /// </summary>
 public partial class WorldScreen : Node2D
 {
+    /// <summary>
+    /// Rango cliente para decidir a qué NPC apunta <c>interact</c>. Con margen sobre el del
+    /// servidor (<c>ShopInteractionRangeTiles</c> = 3, FASE-07 §2 D7) a propósito: el servidor
+    /// tiene la última palabra, así que ser un poco generoso aquí sólo hace que
+    /// <c>ShopOpen</c> se rechace con <c>TooFarAway</c> alguna vez de más, nunca que se acepte algo
+    /// que no debía.
+    /// </summary>
+    private const float InteractRangeTiles = 3.5f;
+
     private readonly Dictionary<int, RemoteEntity> _remotes = [];
 
     /// <summary>Reloj de interpolación. Vive en <c>Shared</c> y tiene sus propios tests.</summary>
@@ -26,6 +36,7 @@ public partial class WorldScreen : Node2D
     private WorldRenderer _renderer = null!;
     private WorldCamera _camera = null!;
     private WorldHud _hud = null!;
+    private ShopScreen _shop = null!;
 
     private LocalPlayer? _local;
     private int _myEntityId;
@@ -40,6 +51,7 @@ public partial class WorldScreen : Node2D
         _renderer = GetNode<WorldRenderer>("Renderer");
         _camera = GetNode<WorldCamera>("Camera");
         _hud = GetNode<WorldHud>("Hud/WorldHud");
+        _shop = GetNode<ShopScreen>("ShopScreen");
 
         var enter = _net.LastWorldEnter;
         if (enter is null)
@@ -116,6 +128,58 @@ public partial class WorldScreen : Node2D
         _camera.FollowTile(_local.RenderPos);
         _renderer.QueueRedraw();
         UpdateHud();
+        HandleInteract();
+    }
+
+    /// <summary>
+    /// Tecla <c>interact</c> (E): si la tienda está abierta, la cierra; si no, abre la del NPC
+    /// más cercano dentro de rango. El servidor decide de verdad si la distancia vale
+    /// (FASE-07 §2 D7) — esto sólo elige a qué NPC apuntar.
+    /// </summary>
+    private void HandleInteract()
+    {
+        if (!Input.IsActionJustPressed(InputActions.Interact) || _local is null)
+        {
+            return;
+        }
+
+        if (_shop.IsOpen)
+        {
+            _shop.RequestClose();
+            return;
+        }
+
+        var npc = FindNearestNpc(_local.Current.Pos);
+        if (npc is null)
+        {
+            return;
+        }
+
+        _shop.NoteOpenedNpc(npc.Id);
+        _net.SendShopOpen(npc.Id);
+    }
+
+    private RemoteEntity? FindNearestNpc(Vec2 fromPos)
+    {
+        RemoteEntity? nearest = null;
+        var nearestDistanceSq = InteractRangeTiles * InteractRangeTiles;
+
+        foreach (var remote in _remotes.Values)
+        {
+            if (remote.Type != EntityType.Npc)
+            {
+                continue;
+            }
+
+            var distanceSq = Vec2.DistanceSquared(fromPos, remote.State.Pos);
+            if (distanceSq <= nearestDistanceSq)
+            {
+                nearest = remote;
+                nearestDistanceSq = distanceSq;
+            }
+        }
+
+        return nearest;
     }
 
     private void OnSnapshot(S2CSnapshot snapshot)

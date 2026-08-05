@@ -1,22 +1,22 @@
 # STATUS — Epimeteo MMORPG
 
-**Última actualización:** 2026-08-05 · **Fase actual:** 6 COMPLETA (inventario y equipamiento) →
-arranca Fase 7. Desplegado en producción: `wss://epimeteo.waterressistan.duckdns.org/ws`
+**Última actualización:** 2026-08-05 · **Fase actual:** 7 COMPLETA (tiendas y armero) →
+arranca Fase 8. Desplegado en producción: `wss://epimeteo.waterressistan.duckdns.org/ws`
 
 ## Estado
 
 | Área | Estado |
 |---|---|
 | Diseño y arquitectura | ✅ Cerrado (`docs/00`, `01`, `02`, `03`) |
-| Repositorio git | ✅ Fases 0–5 commiteadas; Fase 6 lista para commitear |
+| Repositorio git | ✅ Fases 0–6 commiteadas; Fase 7 lista para commitear |
 | Solución .NET | ✅ `Epimeteo.sln` (Shared + Server + Server.Tests + Shared.Tests + tools) |
-| Protocolo | ✅ **Versión 2** (sin cambios de forma: los mensajes de inventario ya estaban reservados desde la Fase 1). Envelope, opcodes, tabla de estados, códec MessagePack; auth, personajes, mundo **e inventario/equipo** (`InvMove`, `InvUse`, `InvDrop`, `Equip`, `Unequip`, `InventoryFull`, `InventoryDelta`, `EquipmentUpdate`, `SystemMessage`) tipados |
-| Servidor | ✅ Lo anterior + **inventario autoritativo en memoria** (`InventorySystem`, puro, sin I/O), persistido como instantánea completa fuera del tick (`InventorySaver`) |
-| Cliente Godot | ⚠️ Conecta, handshake, login/registro, `CharacterSelect`, `World.tscn` y **overlay de inventario** (tecla `I`: bolsas con pestañas, equipo, drag & drop, tooltips). Compila sin warnings, pero **no se ha ejecutado nunca**: no hay Godot en este servidor headless |
-| Tests | ✅ **105/105 compartidos + 99/99 servidor en verde** (0 saltados) |
-| Base de datos | ✅ Postgres 16.14; `0001_init.sql` + `0002_character_name_format.sql` aplicadas (`item_instances` ya existía desde la Fase 2, sin migración nueva) |
-| Contenido (`content/`) | ✅ `content/classes/*.json` (+`startingItems`) + `content/maps/map.village.json` + **`content/items/*.json`** (7 ítems: 2 armas, 2 armaduras, consumible, material, semilla) |
-| Despliegue | ✅ **En producción**: `epimeteo.service` (systemd, usuario dedicado, `Restart=always`, `ProtectSystem=strict`), nginx + TLS propio en `epimeteo.waterressistan.duckdns.org`, backup diario de Postgres por timer. Fase 6 ya desplegada con `deploy/publish.sh` y verificada contra el servicio real |
+| Protocolo | ✅ **Versión 2** (sin cambios de forma: los mensajes de tienda ya estaban reservados desde la Fase 1, salvo `ShopRepair`, hueco real cerrado esta fase sin subir versión). Auth, personajes, mundo, inventario/equipo **y tienda** (`ShopOpen/Buy/Sell/Close/Repair`, `ShopData`, `ShopResult`, `CurrencyUpdate`) tipados |
+| Servidor | ✅ Lo anterior + **tiendas autoritativas en memoria** (`ShopSystem`, puro, sin I/O; `ShopRuntime` con stock y restock por temporizador real), oro persistido junto a la posición, `economy_log` append-only |
+| Cliente Godot | ⚠️ Conecta, handshake, login/registro, `CharacterSelect`, `World.tscn`, overlay de inventario (tecla `I`) y **overlay de tienda** (tecla `E` sobre un NPC: comprar/vender/reparar). Compila sin warnings, pero **no se ha ejecutado nunca**: no hay Godot en este servidor headless |
+| Tests | ✅ **117/117 compartidos + 128/128 servidor en verde** (0 saltados) |
+| Base de datos | ✅ Postgres 16.14; `0001_init.sql` + `0002_character_name_format.sql` + `0003_shops_economy.sql` (`shop_stock`, `economy_log`) aplicadas |
+| Contenido (`content/`) | ✅ `content/classes/*.json` (+`startingItems`, **+`startingGold`**) + `content/maps/map.village.json` + `content/items/*.json` (7 ítems, 2 con `durabilityMax`) + **`content/shops/*.json`** (`general_store`, `armory`, con su NPC cada una) |
+| Despliegue | ✅ **En producción**: `epimeteo.service` (systemd, usuario dedicado, `Restart=always`, `ProtectSystem=strict`), nginx + TLS propio en `epimeteo.waterressistan.duckdns.org`, backup diario de Postgres por timer. Fase 7 ya desplegada con `deploy/publish.sh` y verificada contra el servicio real |
 
 ## Entorno
 
@@ -415,18 +415,88 @@ verificar — el juego en `wss://epimeteo.waterressistan.duckdns.org/ws` ya corr
    `GameLoopService.StopAsync` → `GameWorld.FlushAllState()` (renombrado de
    `FlushAllPositions`, ahora también vuelca inventario), no sólo el guardado por mutación.
 
+## Hecho en la Fase 7 — Tiendas y armero
+
+Plan completo en `docs/fases/FASE-07-tiendas.md` (incluye una §11 añadida al cerrar, con lo que
+pasó de verdad frente a lo planeado). Protocolo, esquema de BD y códigos de error ya estaban
+mayormente cerrados desde las Fases 1–2 (`ShopOpen/Buy/Sell/Close`, `ShopData/ShopResult`,
+`CurrencyUpdate`, `shop_stock`/`economy_log`) salvo una laguna real: reparar no tenía opcode.
+
+- `db/migrations/0003_shops_economy.sql`: `shop_stock` (stock/precio/restock por tienda+ítem) y
+  `economy_log` (append-only, `kind` 1–10 tras esta fase).
+- `Shared/Data/`: `ShopDefinition`/`ShopLoader`/`ShopCatalog` (vive en `Shared`, el cliente
+  también necesita el catálogo completo, mismo motivo que `ItemCatalog`); `ItemDefinition` gana
+  `DurabilityMax`; `ClassDefinition` gana `StartingGold`.
+- `content/shops/{general_store,armory}.json`: uno por tienda, NPC dentro, sólo la armería
+  repara. `iron_sword`/`leather_chest` ganan `durabilityMax`; las tres clases ganan
+  `startingGold: 100`.
+- Protocolo: `ShopRepair = 0x0044` (hueco real, no subió `ProtocolVersion` — mismo criterio que
+  los opcodes de inventario de la Fase 6: añadir un mensaje nuevo no es cambiar la forma de uno
+  que ya existía). 5 mensajes C2S, `ShopSlotInfo`/`S2CShopData`/`S2CShopResult`/
+  `S2CCurrencyUpdate` (primera vez tipado, reservado desde la Fase 1).
+- `Server/Shop/`: `ShopSystem` (estático y puro, como `InventorySystem`: `TryBuy`/`TrySell`/
+  `TryRepair`, nunca toca I/O), `ShopRuntime` (stock en memoria, fusiona lo guardado en Postgres
+  con los valores del JSON al arrancar, repone por reloj de pared una vez al segundo).
+- `World/NpcEntity.cs`: subtipo de `WorldEntity`, registrado al construir cada `Zone` — sin tocar
+  `AoiSystem`/`SnapshotBuilder`, que ya estaban diseñados en la Fase 4 para cualquier tipo de
+  entidad. `PlayerEntity` gana `Gold`/`GoldDirty`; el oro viaja en el mismo guardado async que la
+  posición (`PositionSave`/`CharacterPositionSaver`), no en uno nuevo.
+- `Persistence/Economy/`: `EconomyLogRepository`, `ShopStockRepository`, `EconomySaver` (mismo
+  patrón instantánea-fuera-del-tick que posición e inventario).
+- **Cliente Godot:** `Shop/ShopScreen.cs` (overlay con pestañas Comprar/Vender/Reparar, reutiliza
+  `Inventory.InventoryState` e `ItemSlot` de la Fase 6 tal cual); `WorldScreen` gana la tecla
+  `interact` (`E`) que abre la tienda del NPC más cercano o la cierra; `NetClient` gana los 5
+  `Send*` de tienda, `ShopDataReceived`/`ShopResultReceived`/`CurrencyUpdateReceived` y `Gold`.
+
+### Tres hallazgos reales, ninguno anticipado en el plan — encontrados por la verificación E2E, no por lectura de código
+
+- **Sin oro inicial.** `characters.gold` se quedaba en su `DEFAULT 0` de BD; ningún personaje
+  nuevo podía comprar nada. Añadido `ClassDefinition.StartingGold` (100 en las tres clases),
+  insertado por `CharacterRepository.CreateAsync`.
+- **Bug real, no sólo de esta fase: el oro guardado no viajaba al entrar al mundo.**
+  `WorldJoinRequest` nunca llevaba `Gold`, así que `PlayerEntity.Gold` se quedaba en 0 en cada
+  join/reconexión **aunque el personaje tuviera oro guardado de verdad en Postgres** — y el
+  siguiente barrido de guardado lo habría sobrescrito con 0. Corregido en `WorldJoinRequest`,
+  `SessionMessageHandler` y `Zone.Join`; cubierto con `WorldTests.UnJoin_ConservaElOroGuardado`,
+  una regresión que ningún test anterior habría detectado (nada probaba el oro a nivel de
+  `GameWorld`, sólo `ShopSystem` puro).
+- `EconomyLogKind` (fijado en `docs/02`, valores 1–9, de antes de que existieran las tiendas) no
+  contemplaba reparar — se registraba como `Admin` (7), semánticamente incorrecto. Añadido
+  `Repair = 10` (columna `smallint` sin `CHECK`, no hizo falta migración).
+
+### Verificación Fase 7 (esta sesión, contra el servicio de producción real)
+
+Desplegada con `deploy/publish.sh` **tres veces** en esta sesión (una por cada hallazgo de
+arriba, corregido y re-verificado antes de seguir) antes de dar la fase por cerrada.
+
+1. ✅ `dotnet build` sin warnings; `dotnet test`: **117/117 compartidos + 128/128 servidor**.
+2. ✅ `dotnet build client/Epimeteo.Client.csproj`: sin warnings. UI no ejercitada a mano (sigue
+   sin haber Godot en este servidor headless).
+3. ✅ `tools/Epimeteo.WorldBot --shops-buy` (extendido esta fase con movimiento hacia un punto,
+   `WalkTarget`, porque hacía falta acercarse de verdad a un NPC para probar la distancia):
+   `ShopOpen` lejos → `TooFarAway`; camina de verdad hasta el NPC; `ShopOpen` cerca → `ShopData`;
+   comprar con precio equivocado → `PriceChanged`, oro intacto; comprar de verdad → oro baja
+   exactamente lo esperado; vender el escudo del kit inicial → oro sube lo esperado.
+   **9/9 comprobaciones en verde.**
+4. ✅ Entre medias, `UPDATE item_instances SET durability = 40 ...` por `psql` (nada desgasta
+   ítems todavía de verdad) y `tools/Epimeteo.WorldBot --shops-repair <username>`: reconecta con
+   el mismo personaje, camina hasta el NPC, repara → durabilidad al máximo, oro baja exactamente
+   `(100-40) × 2 = 120`. **5/5 comprobaciones en verde.**
+5. ✅ Verificado en `psql`: `gold`, `durability` del ítem reparado, `shop_stock` (con el stock
+   bajado por las compras) y `economy_log` (tres filas: `kind` 1/2/10) sobreviven un
+   `systemctl restart epimeteo` sin pérdida — mismo criterio que posición e inventario en las
+   Fases 4 y 6.
+
 ## Siguiente sesión
 
-**Fase 7 — Tiendas y armero · Sonnet.** Siguiente en `docs/03-roadmap-fases.md`. Va a necesitar
-`CurrencyUpdate` (`0x8033`, reservado desde la Fase 1, todavía sin tipar) y va a reutilizar
-`InventorySystem`/`ItemCatalog`/`InventoryConstants` de la Fase 6 tal cual para meter y sacar
-ítems de la bolsa del comprador.
+**Fase 8 — Granja y cultivos · Sonnet.** Siguiente en `docs/03-roadmap-fases.md`.
 
 **Pendiente aparte, en cuanto haya una máquina con entorno gráfico:** abrir `client/project.godot`
-en Godot 4.5 y comprobar el punto 7 del criterio de la Fase 4 (dos clientes viéndose mover) **y**
-el overlay de inventario de la Fase 6 (drag & drop de verdad, tecla `I`). El HUD de mundo da los
-números de predicción sin herramientas; el inventario no tiene ese instrumento — hay que
-mirarlo. Ahora que el juego está en producción, el cliente puede apuntar a
+en Godot 4.5 y comprobar el punto 7 del criterio de la Fase 4 (dos clientes viéndose mover), el
+overlay de inventario de la Fase 6 (drag & drop de verdad, tecla `I`) **y** el overlay de tienda
+de la Fase 7 (tecla `E`, comprar/vender/reparar de verdad con el ratón). El HUD de mundo da los
+números de predicción sin herramientas; ni el inventario ni la tienda tienen ese instrumento —
+hay que mirarlos. Ahora que el juego está en producción, el cliente puede apuntar a
 `wss://epimeteo.waterressistan.duckdns.org/ws` en vez de `127.0.0.1`.
 
 **Pendiente de decidir, no técnico:** los datos de prueba acumulados en la BD (cuentas `Bot*`/
@@ -471,4 +541,9 @@ dotnet run --project tools/Epimeteo.WorldBot -- --bots 10
 # Desplegar a producción y verificar de punta a punta (incluye el flujo de inventario)
 bash deploy/publish.sh
 dotnet run --project tools/Epimeteo.SmokeClient
+
+# Tiendas (Fase 7): dos corridas con una manipulación manual de durabilidad por psql entre medias
+dotnet run --project tools/Epimeteo.WorldBot -- --shops-buy
+# UPDATE item_instances SET durability = 40 WHERE owner_char_id = <characterId> AND container = 1 AND slot = 0;
+dotnet run --project tools/Epimeteo.WorldBot -- --shops-repair <username>
 ```

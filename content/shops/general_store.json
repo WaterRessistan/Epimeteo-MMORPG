@@ -1,0 +1,19 @@
+{
+  "key": "shop.general_store",
+  "displayName": "Almacén General",
+  "canRepair": false,
+  "restockMinutes": 360,
+  "npc": {
+    "mapKey": "map.village",
+    "x": 44.5,
+    "y": 58.5,
+    "facing": 2,
+    "name": "Delia",
+    "paletteIndex": 1
+  },
+  "items": [
+    { "defKey": "item.health_potion", "priceBuy": 15, "priceSell": 4 },
+    { "defKey": "item.iron_ore", "priceBuy": 5, "priceSell": 1, "stockMax": 40 },
+    { "defKey": "item.wheat_seed", "priceBuy": 3, "priceSell": 1, "stockMax": 40 }
+  ]
+}

@@ -1,6 +1,8 @@
 using Epimeteo.Server.Content;
 using Epimeteo.Server.Inventory;
+using Epimeteo.Server.Persistence.Economy;
 using Epimeteo.Server.Persistence.Items;
+using Epimeteo.Server.Shop;
 using Epimeteo.Server.World;
 using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
@@ -19,6 +21,7 @@ public sealed class WorldTests
 {
     private static readonly ItemCatalog Items = new(ContentPaths.ResolveContentRoot());
     private static readonly ClassCatalog Classes = new(ContentPaths.ResolveContentRoot());
+    private static readonly ShopCatalog Shops = new(ContentPaths.ResolveContentRoot());
 
     private sealed class FakeSink : IPositionSink
     {
@@ -34,17 +37,37 @@ public sealed class WorldTests
         public void Enqueue(in InventorySave save) => Saves.Add(save);
     }
 
+    private sealed class FakeEconomySink : IEconomySink
+    {
+        public List<EconomySave> Saves { get; } = [];
+
+        public void Enqueue(in EconomySave save) => Saves.Add(save);
+    }
+
     private static (GameWorld World, WorldInbox Inbox, FakeSink Sink) Build(int saveIntervalSeconds = 30)
     {
         var maps = new MapCatalog(ContentPaths.ResolveContentRoot());
         var inbox = new WorldInbox();
         var sink = new FakeSink();
-        var world = new GameWorld(maps, inbox, sink, Items, Classes, new FakeInventorySink(), saveIntervalSeconds);
+        var shopRuntime = new ShopRuntime(Shops, []);
+        var world = new GameWorld(
+            maps, inbox, sink, Items, Classes, new FakeInventorySink(),
+            Shops, shopRuntime, new FakeEconomySink(), new EntityIdAllocator(), saveIntervalSeconds);
         return (world, inbox, sink);
     }
 
-    private static WorldJoinRequest VillageJoin(int entityId, Vec2 position, long characterId) => new(
-        entityId,
+    /// <summary>
+    /// Los NPCs de tienda (Fase 7) se registran al construir el mundo y ya ocupan los primeros
+    /// ids del <c>EntityIdAllocator</c> real que usa <c>GameWorld</c>. Estos tests montan su
+    /// <see cref="WorldJoinRequest"/> a mano, sin pasar por ese allocator (un jugador de verdad sí
+    /// lo hace, en <c>CharSelect</c>) — así que sus ids de prueba tienen que quedar por encima de
+    /// cualquier NPC para no pisarlos en <c>_entities</c>. Con margen de sobra para las tiendas
+    /// que se añadan más adelante.
+    /// </summary>
+    private const int TestEntityIdBase = 1000;
+
+    private static WorldJoinRequest VillageJoin(int entityId, Vec2 position, long characterId, long gold = 0) => new(
+        TestEntityIdBase + entityId,
         characterId,
         $"Jugador{entityId}",
         "class.warrior",
@@ -60,7 +83,8 @@ public sealed class WorldTests
         StatInt: 2,
         StatVit: 6,
         StatDex: 4,
-        Items: []);
+        Items: [],
+        Gold: gold);
 
     private static void PostInput(WorldInbox inbox, int sessionId, uint seq, int dirX, int dirY)
     {
@@ -93,13 +117,40 @@ public sealed class WorldTests
         var (world, inbox, _) = Build();
         var peer = new FakeWorldPeer(1);
 
+        // world.EntityCount arranca por encima de 0: los NPCs de tienda (Fase 7) ya están
+        // registrados al construir el mundo, antes de que nadie se una. Se compara contra el
+        // valor de salida, no contra una cuenta fija, para no volver a romperse la próxima vez
+        // que se añada una tienda.
+        var entitiesBeforeJoin = world.EntityCount;
+
         inbox.PostControl(new PlayerJoinCommand(peer, VillageJoin(1, new Vec2(48.5f, 60.5f), 100)));
         Assert.Equal(0, world.PlayerCount);
 
         world.Tick(1, 50);
 
         Assert.Equal(1, world.PlayerCount);
-        Assert.Equal(1, world.EntityCount);
+        Assert.Equal(entitiesBeforeJoin + 1, world.EntityCount);
+    }
+
+    /// <summary>
+    /// Regresión: el oro guardado (<c>characters.gold</c>) viajaba hasta <c>WorldEnter</c> para
+    /// pintarlo en el cliente, pero <see cref="WorldJoinRequest"/> nunca lo llevaba y
+    /// <c>PlayerEntity.Gold</c> se quedaba en su valor por defecto, 0 — un reconectar silencioso
+    /// habría sobrescrito el oro real de Postgres con 0 en el siguiente barrido de guardado
+    /// (hallazgo de la verificación E2E de la Fase 7).
+    /// </summary>
+    [Fact]
+    public void UnJoin_ConservaElOroGuardado()
+    {
+        var (world, inbox, _) = Build();
+        var peer = new FakeWorldPeer(1);
+
+        inbox.PostControl(new PlayerJoinCommand(peer, VillageJoin(1, new Vec2(48.5f, 60.5f), 100, gold: 250)));
+        world.Tick(1, 50);
+
+        var player = world.Zones.First().FindBySession(1);
+        Assert.NotNull(player);
+        Assert.Equal(250, player.Gold);
     }
 
     [Fact]

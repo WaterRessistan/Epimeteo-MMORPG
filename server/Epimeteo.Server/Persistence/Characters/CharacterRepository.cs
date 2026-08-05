@@ -69,9 +69,9 @@ public sealed class CharacterRepository(NpgsqlConnectionFactory connections, Ite
                 new CommandDefinition(
                     """
                     INSERT INTO characters
-                        (account_id, slot, name, class_key, appearance, stat_str, stat_int, stat_vit, stat_dex, hp, mp)
+                        (account_id, slot, name, class_key, appearance, stat_str, stat_int, stat_vit, stat_dex, hp, mp, gold)
                     VALUES
-                        (@accountId, @slot, @name, @classKey, @appearance::jsonb, @statStr, @statInt, @statVit, @statDex, @hp, @mp)
+                        (@accountId, @slot, @name, @classKey, @appearance::jsonb, @statStr, @statInt, @statVit, @statDex, @hp, @mp, @gold)
                     RETURNING id
                     """,
                     new
@@ -87,6 +87,7 @@ public sealed class CharacterRepository(NpgsqlConnectionFactory connections, Ite
                         statDex = classDef.BaseDex,
                         hp = classDef.BaseHp,
                         mp = classDef.BaseMp,
+                        gold = classDef.StartingGold,
                     },
                     transaction,
                     cancellationToken: ct)).ConfigureAwait(false);
@@ -132,11 +133,14 @@ public sealed class CharacterRepository(NpgsqlConnectionFactory connections, Ite
             var slot = nextSlot.GetValueOrDefault(container, (short)0);
             nextSlot[container] = (short)(slot + 1);
 
+            // Un ítem del kit inicial nace con la durabilidad de fábrica llena, si el ítem se
+            // desgasta (FASE-07 §4) — igual que uno recién comprado en una tienda
+            // (ShopSystem.TryBuy). NULL para los que no la tienen: "no se desgasta" (docs/02).
             await connection.ExecuteAsync(
                 new CommandDefinition(
                     """
-                    INSERT INTO item_instances (def_key, owner_char_id, container, slot, quantity)
-                    VALUES (@defKey, @characterId, @container, @slot, @quantity)
+                    INSERT INTO item_instances (def_key, owner_char_id, container, slot, quantity, durability, durability_max)
+                    VALUES (@defKey, @characterId, @container, @slot, @quantity, @durability, @durabilityMax)
                     """,
                     new
                     {
@@ -145,6 +149,8 @@ public sealed class CharacterRepository(NpgsqlConnectionFactory connections, Ite
                         container = (short)container,
                         slot,
                         quantity = starting.Quantity,
+                        durability = itemDef.DurabilityMax,
+                        durabilityMax = itemDef.DurabilityMax,
                     },
                     transaction,
                     cancellationToken: ct)).ConfigureAwait(false);
@@ -156,8 +162,12 @@ public sealed class CharacterRepository(NpgsqlConnectionFactory connections, Ite
     /// nunca el tick. Actualiza también <c>last_played_at</c>: es el mismo <c>UPDATE</c> y evita
     /// una segunda escritura sobre la misma fila.
     /// </summary>
+    /// <summary>
+    /// Vuelca posición <b>y oro</b> en el mismo <c>UPDATE</c> (FASE-07 §2 D2): son escalares de la
+    /// misma fila, y ambos los guarda la misma cola asíncrona (<c>CharacterPositionSaver</c>).
+    /// </summary>
     public async Task<bool> UpdatePositionAsync(
-        long characterId, string mapKey, float posX, float posY, int facing, CancellationToken ct = default)
+        long characterId, string mapKey, float posX, float posY, int facing, long gold, CancellationToken ct = default)
     {
         await using var connection = await connections.OpenAsync(ct).ConfigureAwait(false);
         var affected = await connection.ExecuteAsync(
@@ -168,10 +178,11 @@ public sealed class CharacterRepository(NpgsqlConnectionFactory connections, Ite
                        pos_x = @posX,
                        pos_y = @posY,
                        facing = @facing,
+                       gold = @gold,
                        last_played_at = now()
                  WHERE id = @characterId AND deleted_at IS NULL
                 """,
-                new { characterId, mapKey, posX, posY, facing = (short)facing },
+                new { characterId, mapKey, posX, posY, facing = (short)facing, gold },
                 cancellationToken: ct)).ConfigureAwait(false);
 
         return affected > 0;

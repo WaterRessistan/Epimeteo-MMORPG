@@ -22,6 +22,13 @@ public sealed record ClassDefinition
     /// en la misma operación que crea la fila de <c>characters</c>.
     /// </summary>
     public StartingItem[] StartingItems { get; init; } = [];
+
+    /// <summary>
+    /// Oro inicial (hueco real que destapó la verificación E2E de la Fase 7: hasta ahora
+    /// <c>characters.gold</c> se quedaba en su DEFAULT 0 de BD y ningún personaje nuevo podía
+    /// comprar nada). Cantidad provisional, igual que los stats — la reajusta la Fase 10.
+    /// </summary>
+    public long StartingGold { get; init; }
 }
 
 /// <summary>Una entrada del kit inicial de una clase.</summary>

@@ -1,0 +1,20 @@
+{
+  "key": "shop.armory",
+  "displayName": "El Yunque de Hierro",
+  "canRepair": true,
+  "restockMinutes": 360,
+  "npc": {
+    "mapKey": "map.village",
+    "x": 54.5,
+    "y": 58.5,
+    "facing": 2,
+    "name": "Grommash",
+    "paletteIndex": 2
+  },
+  "items": [
+    { "defKey": "item.iron_sword", "priceBuy": 80, "priceSell": 20, "stockMax": 5 },
+    { "defKey": "item.wooden_shield", "priceBuy": 50, "priceSell": 12, "stockMax": 5 },
+    { "defKey": "item.leather_chest", "priceBuy": 60, "priceSell": 15, "stockMax": 5 },
+    { "defKey": "item.copper_ring", "priceBuy": 40, "priceSell": 10, "stockMax": 5 }
+  ]
+}

@@ -1,10 +1,11 @@
-[gd_scene load_steps=6 format=3]
+[gd_scene load_steps=7 format=3]
 
 [ext_resource type="Script" path="res://scripts/World/WorldScreen.cs" id="1_world"]
 [ext_resource type="Script" path="res://scripts/World/WorldRenderer.cs" id="2_renderer"]
 [ext_resource type="Script" path="res://scripts/World/WorldCamera.cs" id="3_camera"]
 [ext_resource type="Script" path="res://scripts/Ui/WorldHud.cs" id="4_hud"]
 [ext_resource type="Script" path="res://scripts/Inventory/InventoryScreen.cs" id="5_inventory"]
+[ext_resource type="Script" path="res://scripts/Shop/ShopScreen.cs" id="6_shop"]
 
 [node name="World" type="Node2D"]
 script = ExtResource("1_world")
@@ -63,3 +64,6 @@ text = "corr 0 · err máx 0.000 t · pend 0"
 
 [node name="InventoryScreen" type="CanvasLayer" parent="."]
 script = ExtResource("5_inventory")
+
+[node name="ShopScreen" type="CanvasLayer" parent="."]
+script = ExtResource("6_shop")

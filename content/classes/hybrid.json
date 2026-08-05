@@ -12,5 +12,6 @@
     { "defKey": "item.leather_chest", "quantity": 1 },
     { "defKey": "item.health_potion", "quantity": 1 },
     { "defKey": "item.wheat_seed", "quantity": 3 }
-  ]
+  ],
+  "startingGold": 100
 }

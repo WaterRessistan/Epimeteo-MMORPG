@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
+using Epimeteo.Shared.Net.Messages;
 using Epimeteo.Shared.Simulation;
 
 namespace Epimeteo.WorldBot;
@@ -29,6 +30,21 @@ internal static class Program
         var bots = int.Parse(Arg(args, "--bots") ?? "2");
 
         var map = MapLoader.Load(Path.Combine(RepoRoot(), "content", "maps", "map.village.json"));
+
+        // Flujo de tiendas de la Fase 7 (FASE-07-tiendas.md §9): aparte del guion de netcode de
+        // arriba porque necesita dos corridas separadas con una manipulación de Postgres a mano
+        // entre medias (bajar la durabilidad de un ítem — nada la desgasta todavía de verdad).
+        if (args.Contains("--shops-buy"))
+        {
+            return await ShopsBuyPhase(url, map);
+        }
+
+        if (args.Contains("--shops-repair"))
+        {
+            var username = Arg(args, "--shops-repair") ?? throw new InvalidOperationException("--shops-repair necesita el username de la fase de compra.");
+            return await ShopsRepairPhase(url, map, username);
+        }
+
         var run = Guid.NewGuid().ToString("N")[..6];
 
         Console.WriteLine($"Servidor : {url}");
@@ -91,6 +107,165 @@ internal static class Program
             }
         }
 
+        Console.WriteLine(_failures == 0
+            ? $"\n{_checks}/{_checks} comprobaciones en verde."
+            : $"\n{_failures} de {_checks} comprobaciones fallidas.");
+
+        return _failures == 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Fase 1 del flujo de tiendas (FASE-07-tiendas.md §9): registrarse, comprar y vender de
+    /// verdad contra el servidor. Termina imprimiendo el <c>username</c> para que
+    /// <see cref="ShopsRepairPhase"/> —aparte, porque necesita que alguien baje la durabilidad de
+    /// un ítem por SQL entre medias, ya que nada la desgasta todavía de verdad— pueda reconectar
+    /// con el mismo personaje.
+    /// <code>dotnet run --project tools/Epimeteo.WorldBot -- --shops-buy [url]</code>
+    /// </summary>
+    private static async Task<int> ShopsBuyPhase(string url, GameMap map)
+    {
+        var run = Guid.NewGuid().ToString("N")[..8];
+        var bot = new Bot(url, $"shop_{run}", $"Shop_{run}", map, lagMs: 0);
+
+        try
+        {
+            Console.WriteLine("· Fase 1: registro, compra y venta");
+            await bot.ConnectAsync(register: true);
+            await Run([bot], 300); // deja llegar InventoryFull/EquipmentUpdate/EntitySpawn del join
+
+            var armory = bot.KnownEntities.Values.FirstOrDefault(e => e.DefKey == "shop.armory");
+            Check("El NPC de la armería está visible al entrar (spawn cae en su celda de AOI)", armory is not null);
+            if (armory is null)
+            {
+                return Summarize();
+            }
+
+            // Lejos todavía: falla por distancia antes de mover un solo paso (FASE-07 §2 D7).
+            bot.SendNow(Opcode.ShopOpen, new C2SShopOpen { NpcEntityId = armory.Id });
+            await Run([bot], 500);
+            Check("ShopOpen lejos del NPC → TooFarAway",
+                bot.ShopResults.Any(r => r is { Ok: false, Code: ResultCode.TooFarAway }));
+
+            bot.WalkTarget = new Vec2(armory.X, armory.Y);
+            await Run([bot], 6000);
+            Check("El bot llegó de verdad junto al NPC caminando", bot.WalkTarget is null);
+
+            bot.ShopResults.Clear();
+            bot.SendNow(Opcode.ShopOpen, new C2SShopOpen { NpcEntityId = armory.Id });
+            await Run([bot], 500);
+            Check("ShopOpen cerca del NPC → ShopData", bot.LastShopData is { ShopKey: "shop.armory", CanRepair: true });
+
+            if (bot.LastShopData is not { } shopData)
+            {
+                return Summarize();
+            }
+
+            var swordSlot = Array.FindIndex(shopData.Slots, s => s.DefKey == "item.iron_sword");
+            Check("La armería vende espadas de hierro", swordSlot >= 0);
+            if (swordSlot < 0)
+            {
+                return Summarize();
+            }
+
+            var swordPrice = shopData.Slots[swordSlot].PriceBuy;
+
+            var goldBeforeWrongPrice = bot.Gold;
+            bot.SendNow(Opcode.ShopBuy, new C2SShopBuy { ShopSlot = (byte)swordSlot, Quantity = 1, ExpectedPrice = 1 });
+            await Run([bot], 500);
+            Check("Comprar con precio equivocado → PriceChanged, oro intacto",
+                bot.ShopResults.Any(r => r is { Ok: false, Code: ResultCode.PriceChanged }) && bot.Gold == goldBeforeWrongPrice);
+
+            var goldBeforeBuy = bot.Gold;
+            bot.SendNow(Opcode.ShopBuy, new C2SShopBuy { ShopSlot = (byte)swordSlot, Quantity = 1, ExpectedPrice = swordPrice });
+            await Run([bot], 500);
+            Check($"Comprar una espada baja el oro en {swordPrice} (de {goldBeforeBuy} a {bot.Gold})",
+                bot.Gold == goldBeforeBuy - swordPrice);
+
+            var shieldSlot = Array.FindIndex(shopData.Slots, s => s.DefKey == "item.wooden_shield");
+            Check("La armería recompra escudos de madera", shieldSlot >= 0);
+            if (shieldSlot >= 0)
+            {
+                var shieldSellPrice = shopData.Slots[shieldSlot].PriceSell;
+                var goldBeforeSell = bot.Gold;
+
+                // El escudo del kit inicial vive en WeaponBag/1 (content/classes/warrior.json:
+                // espada, escudo, pociones, en ese orden — FASE-06 §2 D6).
+                bot.SendNow(Opcode.ShopSell, new C2SShopSell
+                {
+                    Container = ContainerId.WeaponBag, Slot = 1, Quantity = 1, ExpectedPrice = shieldSellPrice,
+                });
+                await Run([bot], 500);
+                Check($"Vender el escudo del kit inicial sube el oro en {shieldSellPrice}",
+                    bot.Gold == goldBeforeSell + shieldSellPrice);
+            }
+
+            Console.WriteLine($"\nusername={bot.Username}");
+            Console.WriteLine($"characterId={bot.CharacterId}");
+            Console.WriteLine(
+                "\nPara la fase de reparación: baja por SQL la durabilidad del arma del kit\n" +
+                "inicial (WeaponBag/0) y vuelve a lanzar con --shops-repair <username>. P. ej.:\n" +
+                $"  UPDATE item_instances SET durability = 40\n" +
+                $"    WHERE owner_char_id = {bot.CharacterId} AND container = 1 AND slot = 0;\n");
+
+            return Summarize();
+        }
+        finally
+        {
+            await bot.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Fase 2 del flujo de tiendas: reconecta con el personaje de <see cref="ShopsBuyPhase"/> y
+    /// repara el arma del kit inicial, que para entonces debería tener la durabilidad bajada a
+    /// mano por SQL (nada la desgasta todavía de verdad — FASE-07-tiendas.md §1).
+    /// <code>dotnet run --project tools/Epimeteo.WorldBot -- --shops-repair &lt;username&gt; [url]</code>
+    /// </summary>
+    private static async Task<int> ShopsRepairPhase(string url, GameMap map, string username)
+    {
+        var bot = new Bot(url, username, "no-hace-falta", map, lagMs: 0);
+
+        try
+        {
+            Console.WriteLine("· Fase 2: reparar en la armería");
+            await bot.ConnectAsync(register: false);
+            await Run([bot], 300);
+
+            var armory = bot.KnownEntities.Values.FirstOrDefault(e => e.DefKey == "shop.armory");
+            Check("El NPC de la armería sigue visible al reconectar", armory is not null);
+            if (armory is null)
+            {
+                return Summarize();
+            }
+
+            bot.WalkTarget = new Vec2(armory.X, armory.Y);
+            await Run([bot], 6000);
+            Check("El bot llegó de verdad junto al NPC caminando", bot.WalkTarget is null);
+
+            bot.SendNow(Opcode.ShopOpen, new C2SShopOpen { NpcEntityId = armory.Id });
+            await Run([bot], 500);
+            Check("ShopOpen tras reconectar → ShopData", bot.LastShopData is { ShopKey: "shop.armory" });
+
+            var goldBeforeRepair = bot.Gold;
+            bot.LastInventoryChanges.Clear();
+            bot.SendNow(Opcode.ShopRepair, new C2SShopRepair { Container = ContainerId.WeaponBag, Slot = 0 });
+            await Run([bot], 500);
+
+            var repaired = bot.LastInventoryChanges.GetValueOrDefault((ContainerId.WeaponBag, (byte)0));
+            Check($"Reparar restaura la durabilidad al máximo (quedó en {repaired?.Durability})",
+                repaired is not null && repaired.Durability == repaired.DurabilityMax);
+            Check($"Reparar cobra oro (de {goldBeforeRepair} a {bot.Gold})", bot.Gold < goldBeforeRepair);
+
+            return Summarize();
+        }
+        finally
+        {
+            await bot.DisposeAsync();
+        }
+    }
+
+    private static int Summarize()
+    {
         Console.WriteLine(_failures == 0
             ? $"\n{_checks}/{_checks} comprobaciones en verde."
             : $"\n{_failures} de {_checks} comprobaciones fallidas.");

@@ -73,7 +73,7 @@ public sealed class CharacterPositionSaver : IPositionSink, IHostedService
                 try
                 {
                     await _characters
-                        .UpdatePositionAsync(save.CharacterId, save.MapKey, save.X, save.Y, (int)save.Facing, token)
+                        .UpdatePositionAsync(save.CharacterId, save.MapKey, save.X, save.Y, (int)save.Facing, save.Gold, token)
                         .ConfigureAwait(false);
                     written++;
                 }

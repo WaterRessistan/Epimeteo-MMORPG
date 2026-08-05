@@ -4,5 +4,6 @@
   "type": "Weapon",
   "maxStack": 1,
   "equipCategory": "MainHand",
-  "bonusStr": 2
+  "bonusStr": 2,
+  "durabilityMax": 100
 }

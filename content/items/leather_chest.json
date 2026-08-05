@@ -5,5 +5,6 @@
   "maxStack": 1,
   "equipCategory": "Chest",
   "bonusVit": 2,
-  "bonusHp": 15
+  "bonusHp": 15,
+  "durabilityMax": 80
 }

@@ -322,7 +322,8 @@ public sealed class SessionMessageHandler
             character.StatInt,
             character.StatVit,
             character.StatDex,
-            items);
+            items,
+            character.Gold);
 
         session.Send(Opcode.WorldEnter, new S2CWorldEnter
         {

@@ -208,7 +208,9 @@ CREATE TABLE economy_log (
     id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     at            timestamptz NOT NULL DEFAULT now(),
     kind          smallint NOT NULL,   -- 1 compra, 2 venta, 3 loot, 4 tirar, 5 cosecha,
-                                       -- 6 quest, 7 admin, 8 destruir, 9 trade
+                                       -- 6 quest, 7 admin, 8 destruir, 9 trade, 10 reparar
+                                       -- (10 añadido en la Fase 7: no estaba previsto en este
+                                       -- diseño original — ver FASE-07-tiendas.md §2 D6)
     character_id  bigint,
     def_key       text,
     quantity      int,

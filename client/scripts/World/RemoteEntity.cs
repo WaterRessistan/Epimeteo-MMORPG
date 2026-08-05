@@ -20,6 +20,7 @@ public sealed class RemoteEntity
     {
         Id = info.Id;
         Type = info.Type;
+        DefKey = info.DefKey;
         Name = info.Name;
         PaletteIndex = info.PaletteIndex;
         Hp = info.Hp;
@@ -34,6 +35,12 @@ public sealed class RemoteEntity
 
     /// <summary>Qué es: jugador, monstruo, NPC…</summary>
     public EntityType Type { get; }
+
+    /// <summary>
+    /// Clave de contenido. Para un <see cref="EntityType.Npc"/> de tienda (Fase 7) es la clave de
+    /// la tienda que abre (<c>shop.armory</c>), la misma que trae <c>ShopKey</c> en el JSON.
+    /// </summary>
+    public string DefKey { get; }
 
     /// <summary>Nombre visible sobre la entidad.</summary>
     public string Name { get; }

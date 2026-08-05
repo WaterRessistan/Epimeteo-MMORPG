@@ -80,6 +80,15 @@ public partial class NetClient : Node
     /// <summary>Se dispara con avisos sin opcode dedicado propio (FASE-06 §5): p. ej. un <c>Equip</c> rechazado.</summary>
     public event Action<S2CSystemMessage>? SystemMessageReceived;
 
+    /// <summary>Se dispara al abrir una tienda con éxito (Fase 7), con su catálogo completo.</summary>
+    public event Action<S2CShopData>? ShopDataReceived;
+
+    /// <summary>Se dispara cuando falla <c>ShopOpen</c>/<c>ShopBuy</c>/<c>ShopSell</c>/<c>ShopRepair</c>.</summary>
+    public event Action<S2CShopResult>? ShopResultReceived;
+
+    /// <summary>Se dispara al entrar al mundo y tras cada compra/venta/reparación con éxito.</summary>
+    public event Action<S2CCurrencyUpdate>? CurrencyUpdateReceived;
+
     /// <summary>Estado actual de la conexión.</summary>
     public ConnectionStatus Status { get; private set; } = ConnectionStatus.Disconnected;
 
@@ -114,6 +123,12 @@ public partial class NetClient : Node
 
     /// <summary>Latencia simulada por sentido, en ms. 0 si no se pidió ninguna.</summary>
     public int SimulatedLagMs => _inboundLag.LagMs;
+
+    /// <summary>
+    /// Oro actual. Se inicializa con el de <c>WorldEnter</c> y se mantiene al día con cada
+    /// <c>CurrencyUpdate</c> (Fase 7) — nunca se calcula en el cliente, siempre lo dice el servidor.
+    /// </summary>
+    public long Gold { get; private set; }
 
     /// <inheritdoc />
     public override void _Ready()
@@ -305,6 +320,25 @@ public partial class NetClient : Node
     /// <summary>Desequipar, de vuelta a la bolsa que le toque por su tipo.</summary>
     public void SendUnequip(EquipSlot equipSlot) => Send(Opcode.Unequip, new C2SUnequip { EquipSlot = equipSlot });
 
+    /// <summary>Abrir la tienda de un NPC. El servidor valida la distancia (FASE-07 §2 D7).</summary>
+    public void SendShopOpen(int npcEntityId) => Send(Opcode.ShopOpen, new C2SShopOpen { NpcEntityId = npcEntityId });
+
+    /// <summary>Comprar de la tienda abierta. <paramref name="expectedPrice"/> es el coste total, no el unitario.</summary>
+    public void SendShopBuy(byte shopSlot, int quantity, long expectedPrice) => Send(
+        Opcode.ShopBuy, new C2SShopBuy { ShopSlot = shopSlot, Quantity = quantity, ExpectedPrice = expectedPrice });
+
+    /// <summary>Vender a la tienda abierta. <paramref name="expectedPrice"/> es el ingreso total, no el unitario.</summary>
+    public void SendShopSell(ContainerId container, byte slot, int quantity, long expectedPrice) => Send(
+        Opcode.ShopSell,
+        new C2SShopSell { Container = container, Slot = slot, Quantity = quantity, ExpectedPrice = expectedPrice });
+
+    /// <summary>Reparar un ítem en la tienda abierta (sólo si <c>CanRepair</c>).</summary>
+    public void SendShopRepair(ContainerId container, byte slot) =>
+        Send(Opcode.ShopRepair, new C2SShopRepair { Container = container, Slot = slot });
+
+    /// <summary>Cerrar la tienda abierta.</summary>
+    public void SendShopClose() => Send(Opcode.ShopClose, new C2SShopClose());
+
     private void PumpIncoming()
     {
         var now = ServerClock.NowMs;
@@ -408,6 +442,7 @@ public partial class NetClient : Node
                 {
                     _state = SessionState.Loading;
                     LastWorldEnter = worldEnter;
+                    Gold = worldEnter.Stats.Gold;
                     WorldEnterReceived?.Invoke(worldEnter);
                 }
 
@@ -473,6 +508,31 @@ public partial class NetClient : Node
                 if (FrameCodec.TryDecodePayload<S2CSystemMessage>(frame, out var sysMsg) && sysMsg is not null)
                 {
                     SystemMessageReceived?.Invoke(sysMsg);
+                }
+
+                break;
+
+            case Opcode.ShopData:
+                if (FrameCodec.TryDecodePayload<S2CShopData>(frame, out var shopData) && shopData is not null)
+                {
+                    ShopDataReceived?.Invoke(shopData);
+                }
+
+                break;
+
+            case Opcode.ShopResult:
+                if (FrameCodec.TryDecodePayload<S2CShopResult>(frame, out var shopResult) && shopResult is not null)
+                {
+                    ShopResultReceived?.Invoke(shopResult);
+                }
+
+                break;
+
+            case Opcode.CurrencyUpdate:
+                if (FrameCodec.TryDecodePayload<S2CCurrencyUpdate>(frame, out var currency) && currency is not null)
+                {
+                    Gold = currency.Gold;
+                    CurrencyUpdateReceived?.Invoke(currency);
                 }
 
                 break;

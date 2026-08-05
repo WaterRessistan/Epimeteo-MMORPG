@@ -68,6 +68,20 @@ public sealed class PlayerEntity : WorldEntity
     /// <summary>Verdadero si la posición cambió desde el último guardado.</summary>
     public bool PositionDirty { get; set; }
 
+    /// <summary>Oro actual (FASE-07 §2 D2).</summary>
+    public long Gold { get; set; }
+
+    /// <summary>Verdadero si el oro cambió desde el último guardado. Se persiste junto a la posición.</summary>
+    public bool GoldDirty { get; set; }
+
+    /// <summary>
+    /// Id de entidad del NPC cuya tienda tiene abierta, o <c>null</c> si no tiene ninguna
+    /// (FASE-07 §2 D1). Se guarda el id, no la clave de tienda: revalidar la distancia en cada
+    /// acción (D7) necesita la posición del NPC, y de un id se llega a las dos cosas — de una
+    /// clave de tienda sola no se llega a dónde está parado.
+    /// </summary>
+    public int? OpenShopNpcEntityId { get; set; }
+
     /// <summary>Strikes de anticheat acumulados (inputs por encima del presupuesto).</summary>
     public int CheatStrikes { get; set; }
 

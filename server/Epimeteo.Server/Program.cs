@@ -6,7 +6,9 @@ using Epimeteo.Server.Net;
 using Epimeteo.Server.Persistence;
 using Epimeteo.Server.Persistence.Accounts;
 using Epimeteo.Server.Persistence.Characters;
+using Epimeteo.Server.Persistence.Economy;
 using Epimeteo.Server.Persistence.Items;
+using Epimeteo.Server.Shop;
 using Epimeteo.Server.World;
 using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
@@ -54,9 +56,13 @@ try
     builder.Services.AddSingleton(new ClassCatalog(contentRoot));
     builder.Services.AddSingleton(new MapCatalog(contentRoot));
     builder.Services.AddSingleton(new ItemCatalog(contentRoot));
+    var shopCatalog = new ShopCatalog(contentRoot);
+    builder.Services.AddSingleton(shopCatalog);
     builder.Services.AddSingleton<CharacterRepository>();
     builder.Services.AddSingleton<CharacterService>();
     builder.Services.AddSingleton<ItemRepository>();
+    builder.Services.AddSingleton<EconomyLogRepository>();
+    builder.Services.AddSingleton<ShopStockRepository>();
     builder.Services.AddSingleton<EntityIdAllocator>();
     builder.Services.AddSingleton<WorldInbox>();
     builder.Services.AddSingleton<IWorldInbox>(sp => sp.GetRequiredService<WorldInbox>());
@@ -64,6 +70,16 @@ try
     builder.Services.AddSingleton<IPositionSink>(sp => sp.GetRequiredService<CharacterPositionSaver>());
     builder.Services.AddSingleton<InventorySaver>();
     builder.Services.AddSingleton<IInventorySink>(sp => sp.GetRequiredService<InventorySaver>());
+    builder.Services.AddSingleton<EconomySaver>();
+    builder.Services.AddSingleton<IEconomySink>(sp => sp.GetRequiredService<EconomySaver>());
+
+    // El stock de tiendas se carga una vez aquí, de forma síncrona-bloqueante, igual que
+    // MigrationRunner.Run un poco más arriba: es el arranque del proceso, no el tick — bloquear
+    // aquí no para nada que ya esté simulando (CLAUDE.md §4 habla del tick, no de esto).
+    var shopStockRows = new ShopStockRepository(new NpgsqlConnectionFactory(connectionString))
+        .ListAllAsync().GetAwaiter().GetResult();
+    builder.Services.AddSingleton(new ShopRuntime(shopCatalog, shopStockRows));
+
     builder.Services.AddSingleton<GameWorld>();
     builder.Services.AddSingleton<SessionMessageHandler>();
     builder.Services.AddSingleton<SessionManager>();
@@ -76,6 +92,7 @@ try
     // vaciado final del apagado todavía tiene quien lo escriba.
     builder.Services.AddHostedService(sp => sp.GetRequiredService<CharacterPositionSaver>());
     builder.Services.AddHostedService(sp => sp.GetRequiredService<InventorySaver>());
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<EconomySaver>());
     builder.Services.AddHostedService<GameLoopService>();
 
     builder.WebHost.ConfigureKestrel(kestrel =>
@@ -164,7 +181,8 @@ try
     }));
 
     app.MapGet("/status", (
-        SessionManager sessions, GameLoop loop, GameWorld world, CharacterPositionSaver saver, InventorySaver invSaver) =>
+        SessionManager sessions, GameLoop loop, GameWorld world,
+        CharacterPositionSaver saver, InventorySaver invSaver, EconomySaver econSaver) =>
     {
         var stats = loop.Metrics.Snapshot();
         return Results.Json(new
@@ -178,6 +196,7 @@ try
                 entities = world.EntityCount,
                 pendingSaves = saver.PendingCount,
                 pendingInventorySaves = invSaver.PendingCount,
+                pendingEconomySaves = econSaver.PendingCount,
             },
             tick = new
             {

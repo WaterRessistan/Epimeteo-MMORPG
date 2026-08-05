@@ -44,4 +44,20 @@ public sealed class ClassCatalogTests
         Assert.True(definition.BaseHp > 0);
         Assert.True(definition.BaseMp > 0);
     }
+
+    /// <summary>
+    /// Gap real que destapó la verificación E2E de la Fase 7: sin esto, un personaje recién
+    /// creado no puede comprar nada en ninguna tienda (FASE-07-tiendas.md, hallazgo E2E).
+    /// </summary>
+    [Theory]
+    [InlineData("class.warrior")]
+    [InlineData("class.mage")]
+    [InlineData("class.hybrid")]
+    public void TryGet_TieneOroInicialParaPoderComprarEnLasTiendas(string classKey)
+    {
+        var catalog = LoadCatalog();
+        Assert.True(catalog.TryGet(classKey, out var definition));
+
+        Assert.True(definition!.StartingGold > 0);
+    }
 }

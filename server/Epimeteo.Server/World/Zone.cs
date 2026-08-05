@@ -26,13 +26,30 @@ public sealed class Zone
     private readonly ILogger _log = Log.ForContext<Zone>();
     private bool _cellsDirty;
 
-    public Zone(GameMap map)
+    public Zone(GameMap map, IReadOnlyList<NpcEntity>? npcs = null)
     {
         Map = map;
         _grid = new AoiGrid(map.Width, map.Height);
         _cells = new CellGrid(_grid.CellCount);
         _aoi = new AoiSystem(_grid, _cells, _entities);
         _snapshots = new SnapshotBuilder(_entities);
+
+        // Los NPCs se registran una vez, al construir la zona (no por jugador, como los
+        // PlayerEntity): son estáticos para siempre, así que basta con que existan en
+        // _entities/_cells para que el AoiSystem de cualquier jugador cercano los descubra con
+        // el EntitySpawn que ya existe desde la Fase 4 (FASE-07 §2 D3). Sin _aoi.Refresh —eso es
+        // "quién ve a quién" desde la perspectiva de un jugador, y un NPC nunca mira alrededor—.
+        foreach (var npc in npcs ?? [])
+        {
+            npc.Cell = _grid.CellOf(npc.State.Pos);
+            _entities[npc.Id] = npc;
+            _cells.Add(npc.Id, npc.Cell);
+        }
+
+        if (npcs is { Count: > 0 })
+        {
+            _cellsDirty = true;
+        }
     }
 
     /// <summary>Mapa que simula esta zona.</summary>
@@ -86,6 +103,7 @@ public sealed class Zone
             IntStat = request.StatInt,
             Vit = request.StatVit,
             Dex = request.StatDex,
+            Gold = request.Gold,
         };
 
         player.Cell = _grid.CellOf(position);

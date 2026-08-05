@@ -1,6 +1,8 @@
 using Epimeteo.Server.Content;
 using Epimeteo.Server.Inventory;
+using Epimeteo.Server.Persistence.Economy;
 using Epimeteo.Server.Persistence.Items;
+using Epimeteo.Server.Shop;
 using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Net.Messages;
@@ -19,12 +21,18 @@ namespace Epimeteo.Server.World;
 /// </summary>
 public sealed class GameWorld
 {
+    /// <summary>Radio de interacción con un NPC de tienda, en tiles (FASE-07 §2 D7).</summary>
+    private const float ShopInteractionRangeTiles = 3f;
+
     private readonly Dictionary<string, Zone> _zones = new(StringComparer.Ordinal);
     private readonly WorldInbox _inbox;
     private readonly IPositionSink _positions;
     private readonly ItemCatalog _items;
     private readonly ClassCatalog _classes;
     private readonly IInventorySink _inventorySink;
+    private readonly ShopCatalog _shops;
+    private readonly ShopRuntime _shopRuntime;
+    private readonly IEconomySink _economySink;
     private readonly int _saveIntervalTicks;
     private readonly string _fallbackMapKey;
     private readonly ILogger _log = Log.ForContext<GameWorld>();
@@ -36,6 +44,10 @@ public sealed class GameWorld
         ItemCatalog items,
         ClassCatalog classes,
         IInventorySink inventorySink,
+        ShopCatalog shops,
+        ShopRuntime shopRuntime,
+        IEconomySink economySink,
+        EntityIdAllocator entityIds,
         int saveIntervalSeconds = 30)
     {
         _inbox = inbox;
@@ -43,11 +55,28 @@ public sealed class GameWorld
         _items = items;
         _classes = classes;
         _inventorySink = inventorySink;
+        _shops = shops;
+        _shopRuntime = shopRuntime;
+        _economySink = economySink;
         _saveIntervalTicks = saveIntervalSeconds * SimulationConstants.TickRate;
+
+        var npcsByMap = new Dictionary<string, List<NpcEntity>>(StringComparer.Ordinal);
+        foreach (var shop in shops.All)
+        {
+            var npc = new NpcEntity(
+                entityIds.Next(), shop.Key, shop.Npc.Name, new Vec2(shop.Npc.X, shop.Npc.Y), shop.Npc.Facing);
+
+            if (!npcsByMap.TryGetValue(shop.Npc.MapKey, out var list))
+            {
+                npcsByMap[shop.Npc.MapKey] = list = [];
+            }
+
+            list.Add(npc);
+        }
 
         foreach (var map in maps.All)
         {
-            _zones[map.Key] = new Zone(map);
+            _zones[map.Key] = new Zone(map, npcsByMap.GetValueOrDefault(map.Key));
         }
 
         _fallbackMapKey = _zones.ContainsKey("map.village") ? "map.village" : _zones.Keys.First();
@@ -84,6 +113,7 @@ public sealed class GameWorld
         }
 
         SweepSaves(tick);
+        SweepRestock(tick);
     }
 
     /// <summary>
@@ -214,6 +244,26 @@ public sealed class GameWorld
 
                 case Opcode.Unequip:
                     HandleUnequip(message);
+                    break;
+
+                case Opcode.ShopOpen:
+                    HandleShopOpen(message);
+                    break;
+
+                case Opcode.ShopBuy:
+                    HandleShopBuy(message);
+                    break;
+
+                case Opcode.ShopSell:
+                    HandleShopSell(message);
+                    break;
+
+                case Opcode.ShopClose:
+                    HandleShopClose(message);
+                    break;
+
+                case Opcode.ShopRepair:
+                    HandleShopRepair(message);
                     break;
 
                 default:
@@ -368,8 +418,18 @@ public sealed class GameWorld
             return;
         }
 
+        // Se captura antes de mutar: TryDrop puede vaciar el hueco. economy_log quiere saber qué
+        // se tiró (FASE-07 §2 D9 — retoma lo que la Fase 6 dejó pendiente por falta de tabla).
+        var defKey = player.Inventory.Find(drop.Container, drop.Slot)?.DefKey;
+
         var result = InventorySystem.TryDrop(player.Inventory, drop.Container, drop.Slot, drop.Quantity);
         ApplyResult(player, result);
+
+        if (result.Ok && result.Touched.Count > 0 && defKey is not null)
+        {
+            _economySink.Enqueue(new EconomySave(
+                EconomyLogKind.Drop, player.CharacterId, defKey, drop.Quantity, 0, player.Gold, null, null, null, null));
+        }
     }
 
     private void HandleEquip(in WorldMessage message)
@@ -422,6 +482,349 @@ public sealed class GameWorld
 
         var result = InventorySystem.TryUnequip(player.Inventory, _items, unequip.EquipSlot);
         ApplyResult(player, result);
+    }
+
+    // ── Tienda ───────────────────────────────────────────────────────────
+
+    private void HandleShopOpen(in WorldMessage message)
+    {
+        if (!FrameCodec.TryDecodeBody<C2SShopOpen>(message.Payload, out var open) || open is null)
+        {
+            _log.Warning("ShopOpen ilegible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (FindPlayerZone(message.SessionId) is not { } found)
+        {
+            return;
+        }
+
+        var (zone, player) = found;
+
+        if (!zone.Entities.TryGetValue(open.NpcEntityId, out var entity) || entity is not NpcEntity npc)
+        {
+            SendShopFailure(player, ResultCode.TargetNotFound);
+            return;
+        }
+
+        if (!IsWithinShopRange(player, npc))
+        {
+            SendShopFailure(player, ResultCode.TooFarAway);
+            return;
+        }
+
+        if (!_shops.TryGet(npc.ShopKey, out var shop) || !_shopRuntime.TryGetShopStock(npc.ShopKey, out var stock))
+        {
+            _log.Error("NPC {EntityId} referencia la tienda desconocida {ShopKey}", npc.Id, npc.ShopKey);
+            SendShopFailure(player, ResultCode.UnknownError);
+            return;
+        }
+
+        player.OpenShopNpcEntityId = npc.Id;
+        player.Peer.Send(Opcode.ShopData, BuildShopData(shop, stock));
+    }
+
+    private void HandleShopBuy(in WorldMessage message)
+    {
+        if (!FrameCodec.TryDecodeBody<C2SShopBuy>(message.Payload, out var buy) || buy is null)
+        {
+            _log.Warning("ShopBuy ilegible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (buy.Quantity <= 0)
+        {
+            _log.Warning("ShopBuy con cantidad imposible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (FindPlayerZone(message.SessionId) is not { } found)
+        {
+            return;
+        }
+
+        var (zone, player) = found;
+        if (ResolveOpenShop(zone, player) is not { } resolved)
+        {
+            return;
+        }
+
+        var (shop, stock, npc) = resolved;
+        if (!IsWithinShopRange(player, npc))
+        {
+            SendShopFailure(player, ResultCode.TooFarAway);
+            return;
+        }
+
+        var result = ShopSystem.TryBuy(player.Inventory, _items, shop, stock, player.Gold, buy.ShopSlot, buy.Quantity, buy.ExpectedPrice);
+        if (!result.Ok)
+        {
+            SendShopFailure(player, result.Code);
+            return;
+        }
+
+        var defKey = shop.Items[buy.ShopSlot].DefKey;
+        ApplySuccessfulShopOp(player, result, EconomyLogKind.Buy, shop, stock, defKey, buy.Quantity);
+    }
+
+    private void HandleShopSell(in WorldMessage message)
+    {
+        if (!FrameCodec.TryDecodeBody<C2SShopSell>(message.Payload, out var sell) || sell is null)
+        {
+            _log.Warning("ShopSell ilegible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (!InventoryConstants.IsWellFormedSlot(sell.Container, sell.Slot) || sell.Quantity <= 0)
+        {
+            _log.Warning("ShopSell con hueco o cantidad imposibles en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (FindPlayerZone(message.SessionId) is not { } found)
+        {
+            return;
+        }
+
+        var (zone, player) = found;
+        if (ResolveOpenShop(zone, player) is not { } resolved)
+        {
+            return;
+        }
+
+        var (shop, stock, npc) = resolved;
+        if (!IsWithinShopRange(player, npc))
+        {
+            SendShopFailure(player, ResultCode.TooFarAway);
+            return;
+        }
+
+        // Se captura antes de mutar: TrySell puede vaciar el hueco.
+        var defKey = player.Inventory.Find(sell.Container, sell.Slot)?.DefKey;
+
+        var result = ShopSystem.TrySell(player.Inventory, shop, stock, player.Gold, sell.Container, sell.Slot, sell.Quantity, sell.ExpectedPrice);
+        if (!result.Ok)
+        {
+            SendShopFailure(player, result.Code);
+            return;
+        }
+
+        ApplySuccessfulShopOp(player, result, EconomyLogKind.Sell, shop, stock, defKey!, sell.Quantity);
+    }
+
+    private void HandleShopRepair(in WorldMessage message)
+    {
+        if (!FrameCodec.TryDecodeBody<C2SShopRepair>(message.Payload, out var repair) || repair is null)
+        {
+            _log.Warning("ShopRepair ilegible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (!InventoryConstants.IsWellFormedSlot(repair.Container, repair.Slot))
+        {
+            _log.Warning("ShopRepair con hueco imposible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (FindPlayerZone(message.SessionId) is not { } found)
+        {
+            return;
+        }
+
+        var (zone, player) = found;
+        if (ResolveOpenShop(zone, player) is not { } resolved)
+        {
+            return;
+        }
+
+        var (shop, stock, npc) = resolved;
+        if (!IsWithinShopRange(player, npc))
+        {
+            SendShopFailure(player, ResultCode.TooFarAway);
+            return;
+        }
+
+        var defKey = player.Inventory.Find(repair.Container, repair.Slot)?.DefKey;
+
+        var result = ShopSystem.TryRepair(player.Inventory, _items, shop, player.Gold, repair.Container, repair.Slot);
+        if (!result.Ok)
+        {
+            SendShopFailure(player, result.Code);
+            return;
+        }
+
+        if (defKey is not null)
+        {
+            // Reparar no toca stock de tienda (no es comprar ni vender): 1 unidad, sin entrada de stock.
+            ApplySuccessfulShopOp(player, result, EconomyLogKind.Repair, shop, stock, defKey, quantity: 1, touchesStock: false);
+        }
+    }
+
+    private void HandleShopClose(in WorldMessage message)
+    {
+        var player = FindPlayer(message.SessionId);
+        if (player is not null)
+        {
+            player.OpenShopNpcEntityId = null;
+        }
+    }
+
+    /// <summary>Busca al jugador de una sesión junto con la zona en la que está (para mirar sus NPCs).</summary>
+    private (Zone Zone, PlayerEntity Player)? FindPlayerZone(int sessionId)
+    {
+        foreach (var zone in _zones.Values)
+        {
+            var player = zone.FindBySession(sessionId);
+            if (player is not null)
+            {
+                return (zone, player);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// La tienda que el jugador dice tener abierta, revalidada de verdad contra la zona actual —
+    /// no basta con confiar en <c>OpenShopNpcEntityId</c>: el NPC podría no estar ya en esta zona
+    /// si algo (fuera de alcance hoy) lo hubiera hecho desaparecer.
+    /// </summary>
+    private (ShopDefinition Shop, IReadOnlyDictionary<string, ShopStockState> Stock, NpcEntity Npc)? ResolveOpenShop(
+        Zone zone, PlayerEntity player)
+    {
+        if (player.OpenShopNpcEntityId is not { } npcId ||
+            !zone.Entities.TryGetValue(npcId, out var entity) ||
+            entity is not NpcEntity npc)
+        {
+            SendShopFailure(player, ResultCode.ShopNotOpen);
+            return null;
+        }
+
+        if (!_shops.TryGet(npc.ShopKey, out var shop) || !_shopRuntime.TryGetShopStock(npc.ShopKey, out var stock))
+        {
+            _log.Error("NPC {EntityId} referencia la tienda desconocida {ShopKey}", npc.Id, npc.ShopKey);
+            SendShopFailure(player, ResultCode.UnknownError);
+            return null;
+        }
+
+        return (shop, stock, npc);
+    }
+
+    private static bool IsWithinShopRange(PlayerEntity player, WorldEntity npc) =>
+        Vec2.DistanceSquared(player.State.Pos, npc.State.Pos) <= ShopInteractionRangeTiles * ShopInteractionRangeTiles;
+
+    private static void SendShopFailure(PlayerEntity player, ResultCode code) =>
+        player.Peer.Send(Opcode.ShopResult, new S2CShopResult { Ok = false, Code = code });
+
+    private static S2CShopData BuildShopData(ShopDefinition shop, IReadOnlyDictionary<string, ShopStockState> stock) => new()
+    {
+        ShopKey = shop.Key,
+        DisplayName = shop.DisplayName,
+        CanRepair = shop.CanRepair,
+        Slots = [.. shop.Items.Select(item =>
+        {
+            var state = stock[item.DefKey];
+            return new ShopSlotInfo
+            {
+                DefKey = item.DefKey,
+                PriceBuy = state.PriceBuyOverride ?? item.PriceBuy,
+                PriceSell = state.PriceSellOverride ?? item.PriceSell,
+                Stock = state.Stock ?? -1,
+            };
+        })],
+    };
+
+    /// <summary>
+    /// El desenlace de una compra/venta/reparación con éxito: aplica el oro y los huecos de
+    /// inventario tocados (reutilizando <see cref="ApplyResult"/> de la Fase 6 tal cual — una
+    /// reparación puede tocar un ítem equipado, así que también puede disparar
+    /// <c>EquipmentUpdate</c> si la durabilidad formara parte de los stats derivados, cosa que hoy
+    /// no hace, pero el camino ya está ahí sin más código) y encola el log + el stock nuevo.
+    /// </summary>
+    private void ApplySuccessfulShopOp(
+        PlayerEntity player, ShopOpResult result, EconomyLogKind kind, ShopDefinition shop,
+        IReadOnlyDictionary<string, ShopStockState> stock, string defKey, int quantity, bool touchesStock = true)
+    {
+        var goldDelta = result.NewGold - player.Gold;
+        player.Gold = result.NewGold;
+
+        if (goldDelta != 0)
+        {
+            player.GoldDirty = true;
+            player.Peer.Send(Opcode.CurrencyUpdate, new S2CCurrencyUpdate { Gold = player.Gold });
+        }
+
+        if (result.InventoryTouched.Count > 0)
+        {
+            ApplyResult(player, new InventoryOpResult(true, ResultCode.Ok, result.InventoryTouched));
+        }
+
+        if (goldDelta == 0 && result.InventoryTouched.Count == 0)
+        {
+            // P. ej. reparar algo ya al máximo: éxito, pero no hay nada que loguear ni persistir.
+            return;
+        }
+
+        var shopItem = touchesStock ? Array.Find(shop.Items, item => item.DefKey == defKey) : null;
+        var state = touchesStock && stock.TryGetValue(defKey, out var found) ? found : null;
+
+        _economySink.Enqueue(new EconomySave(
+            kind, player.CharacterId, defKey, quantity, goldDelta, player.Gold,
+            shop.Key, state?.Stock, shopItem?.StockMax, state?.RestockAt));
+    }
+
+    /// <summary>
+    /// Repone lo que toque de cada tienda (FASE-07 §2 D8) una vez por segundo, no cada tick: el
+    /// horario es real (minutos), comprobarlo a 20 Hz sería puro desperdicio. A quien tenga esa
+    /// tienda abierta se le manda un <c>ShopData</c> fresco: si no, vería un stock repuesto que
+    /// su pantalla no refleja hasta que la cierre y la vuelva a abrir.
+    /// </summary>
+    private void SweepRestock(long tick)
+    {
+        if (tick % SimulationConstants.TickRate != 0)
+        {
+            return;
+        }
+
+        var restocked = _shopRuntime.SweepRestock(_shops, DateTimeOffset.UtcNow);
+        if (restocked.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var shopKey in restocked)
+        {
+            if (!_shops.TryGet(shopKey, out var shop) || !_shopRuntime.TryGetShopStock(shopKey, out var stock))
+            {
+                continue;
+            }
+
+            foreach (var item in shop.Items)
+            {
+                var state = stock[item.DefKey];
+                _economySink.Enqueue(EconomySave.Restock(shopKey, item.DefKey, state.Stock ?? 0, item.StockMax ?? 0, state.RestockAt));
+            }
+
+            foreach (var zone in _zones.Values)
+            {
+                foreach (var player in zone.Players)
+                {
+                    if (player.OpenShopNpcEntityId is { } npcId &&
+                        zone.Entities.TryGetValue(npcId, out var entity) &&
+                        entity is NpcEntity npc && npc.ShopKey == shopKey)
+                    {
+                        player.Peer.Send(Opcode.ShopData, BuildShopData(shop, stock));
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -569,7 +972,7 @@ public sealed class GameWorld
 
     private void Save(Zone zone, PlayerEntity player, bool force = false)
     {
-        if (!player.PositionDirty && !force)
+        if (!player.PositionDirty && !player.GoldDirty && !force)
         {
             return;
         }
@@ -579,8 +982,10 @@ public sealed class GameWorld
             zone.Map.Key,
             player.State.Pos.X,
             player.State.Pos.Y,
-            player.State.Facing));
+            player.State.Facing,
+            player.Gold));
 
         player.PositionDirty = false;
+        player.GoldDirty = false;
     }
 }
