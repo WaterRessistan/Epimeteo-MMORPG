@@ -1,6 +1,8 @@
 using Epimeteo.Server.Content;
+using Epimeteo.Server.Farm;
 using Epimeteo.Server.Inventory;
 using Epimeteo.Server.Persistence.Economy;
+using Epimeteo.Server.Persistence.Farm;
 using Epimeteo.Server.Persistence.Items;
 using Epimeteo.Server.Shop;
 using Epimeteo.Server.World;
@@ -22,6 +24,7 @@ public sealed class WorldTests
     private static readonly ItemCatalog Items = new(ContentPaths.ResolveContentRoot());
     private static readonly ClassCatalog Classes = new(ContentPaths.ResolveContentRoot());
     private static readonly ShopCatalog Shops = new(ContentPaths.ResolveContentRoot());
+    private static readonly CropCatalog Crops = new(ContentPaths.ResolveContentRoot());
 
     private sealed class FakeSink : IPositionSink
     {
@@ -44,15 +47,24 @@ public sealed class WorldTests
         public void Enqueue(in EconomySave save) => Saves.Add(save);
     }
 
+    private sealed class FakeFarmSink : IFarmSink
+    {
+        public List<FarmTileSave> Saves { get; } = [];
+
+        public void Enqueue(in FarmTileSave save) => Saves.Add(save);
+    }
+
     private static (GameWorld World, WorldInbox Inbox, FakeSink Sink) Build(int saveIntervalSeconds = 30)
     {
         var maps = new MapCatalog(ContentPaths.ResolveContentRoot());
         var inbox = new WorldInbox();
         var sink = new FakeSink();
         var shopRuntime = new ShopRuntime(Shops, []);
+        var farmRuntime = new FarmRuntime([], [], FarmCalendar.DayIndex(DateTimeOffset.UtcNow));
         var world = new GameWorld(
             maps, inbox, sink, Items, Classes, new FakeInventorySink(),
-            Shops, shopRuntime, new FakeEconomySink(), new EntityIdAllocator(), saveIntervalSeconds);
+            Shops, shopRuntime, new FakeEconomySink(), Crops, farmRuntime, new FakeFarmSink(),
+            new EntityIdAllocator(), saveIntervalSeconds);
         return (world, inbox, sink);
     }
 

@@ -1,0 +1,6 @@
+{
+  "key": "item.wheat",
+  "displayName": "Trigo",
+  "type": "Material",
+  "maxStack": 99
+}

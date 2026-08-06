@@ -48,4 +48,11 @@ public sealed record ItemDefinition
     /// manipulando un ítem a mano hasta que exista una fuente real de desgaste.
     /// </summary>
     public int? DurabilityMax { get; init; }
+
+    /// <summary>
+    /// Sólo presente si <see cref="EquipCategory"/> es <see cref="Data.EquipCategory.Tool"/>: qué
+    /// acción de granja habilita (FASE-08 §2 D4). Con un único hueco de herramienta, sin esto no
+    /// hay forma de exigir "la herramienta correcta" para arar frente a regar.
+    /// </summary>
+    public FarmToolAction? FarmToolAction { get; init; }
 }

@@ -51,6 +51,13 @@ public static class ItemLoader
                 $"{source}: 'equipCategory' sólo tiene sentido en Weapon/Armor, no en '{raw.Type}'.");
         }
 
+        var farmToolAction = ParseFarmToolAction(raw.FarmToolAction, source);
+        if (farmToolAction is not null && equipCategory != EquipCategory.Tool)
+        {
+            throw new InvalidOperationException(
+                $"{source}: 'farmToolAction' sólo tiene sentido con equipCategory 'Tool'.");
+        }
+
         return new ItemDefinition
         {
             Key = raw.Key,
@@ -66,6 +73,7 @@ public static class ItemLoader
             BonusMp = raw.BonusMp,
             HealAmount = raw.HealAmount,
             DurabilityMax = raw.DurabilityMax,
+            FarmToolAction = farmToolAction,
         };
     }
 
@@ -97,6 +105,14 @@ public static class ItemLoader
         _ => throw new InvalidOperationException($"{source}: 'equipCategory' desconocido '{raw}'."),
     };
 
+    private static FarmToolAction? ParseFarmToolAction(string? raw, string source) => raw switch
+    {
+        null => null,
+        "Till" => FarmToolAction.Till,
+        "Water" => FarmToolAction.Water,
+        _ => throw new InvalidOperationException($"{source}: 'farmToolAction' desconocido '{raw}'."),
+    };
+
     /// <summary>Forma cruda del JSON, antes de validar. Nunca sale de este fichero.</summary>
     private sealed record RawItemDefinition
     {
@@ -125,5 +141,7 @@ public static class ItemLoader
         public int HealAmount { get; init; }
 
         public int? DurabilityMax { get; init; }
+
+        public string? FarmToolAction { get; init; }
     }
 }

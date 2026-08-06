@@ -1,12 +1,14 @@
 using System.Net;
 using Epimeteo.Server;
 using Epimeteo.Server.Content;
+using Epimeteo.Server.Farm;
 using Epimeteo.Server.Inventory;
 using Epimeteo.Server.Net;
 using Epimeteo.Server.Persistence;
 using Epimeteo.Server.Persistence.Accounts;
 using Epimeteo.Server.Persistence.Characters;
 using Epimeteo.Server.Persistence.Economy;
+using Epimeteo.Server.Persistence.Farm;
 using Epimeteo.Server.Persistence.Items;
 using Epimeteo.Server.Shop;
 using Epimeteo.Server.World;
@@ -58,11 +60,15 @@ try
     builder.Services.AddSingleton(new ItemCatalog(contentRoot));
     var shopCatalog = new ShopCatalog(contentRoot);
     builder.Services.AddSingleton(shopCatalog);
+    builder.Services.AddSingleton(new CropCatalog(contentRoot));
     builder.Services.AddSingleton<CharacterRepository>();
     builder.Services.AddSingleton<CharacterService>();
     builder.Services.AddSingleton<ItemRepository>();
     builder.Services.AddSingleton<EconomyLogRepository>();
     builder.Services.AddSingleton<ShopStockRepository>();
+    builder.Services.AddSingleton<FarmPlotRepository>();
+    builder.Services.AddSingleton<FarmTileRepository>();
+    builder.Services.AddSingleton<FarmCalendarRepository>();
     builder.Services.AddSingleton<EntityIdAllocator>();
     builder.Services.AddSingleton<WorldInbox>();
     builder.Services.AddSingleton<IWorldInbox>(sp => sp.GetRequiredService<WorldInbox>());
@@ -72,13 +78,22 @@ try
     builder.Services.AddSingleton<IInventorySink>(sp => sp.GetRequiredService<InventorySaver>());
     builder.Services.AddSingleton<EconomySaver>();
     builder.Services.AddSingleton<IEconomySink>(sp => sp.GetRequiredService<EconomySaver>());
+    builder.Services.AddSingleton<FarmTileSaver>();
+    builder.Services.AddSingleton<IFarmSink>(sp => sp.GetRequiredService<FarmTileSaver>());
 
-    // El stock de tiendas se carga una vez aquí, de forma síncrona-bloqueante, igual que
-    // MigrationRunner.Run un poco más arriba: es el arranque del proceso, no el tick — bloquear
-    // aquí no para nada que ya esté simulando (CLAUDE.md §4 habla del tick, no de esto).
+    // El stock de tiendas y el estado de granja se cargan una vez aquí, de forma
+    // síncrona-bloqueante, igual que MigrationRunner.Run un poco más arriba: es el arranque del
+    // proceso, no el tick — bloquear aquí no para nada que ya esté simulando (CLAUDE.md §4 habla
+    // del tick, no de esto).
     var shopStockRows = new ShopStockRepository(new NpgsqlConnectionFactory(connectionString))
         .ListAllAsync().GetAwaiter().GetResult();
     builder.Services.AddSingleton(new ShopRuntime(shopCatalog, shopStockRows));
+
+    var farmConnections = new NpgsqlConnectionFactory(connectionString);
+    var farmPlotRows = new FarmPlotRepository(farmConnections).ListAllAsync().GetAwaiter().GetResult();
+    var farmTileRows = new FarmTileRepository(farmConnections).ListAllAsync().GetAwaiter().GetResult();
+    var farmLastDayIndex = new FarmCalendarRepository(farmConnections).GetLastDayIndexAsync().GetAwaiter().GetResult();
+    builder.Services.AddSingleton(new FarmRuntime(farmPlotRows, farmTileRows, farmLastDayIndex));
 
     builder.Services.AddSingleton<GameWorld>();
     builder.Services.AddSingleton<SessionMessageHandler>();
@@ -93,6 +108,7 @@ try
     builder.Services.AddHostedService(sp => sp.GetRequiredService<CharacterPositionSaver>());
     builder.Services.AddHostedService(sp => sp.GetRequiredService<InventorySaver>());
     builder.Services.AddHostedService(sp => sp.GetRequiredService<EconomySaver>());
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<FarmTileSaver>());
     builder.Services.AddHostedService<GameLoopService>();
 
     builder.WebHost.ConfigureKestrel(kestrel =>
@@ -182,7 +198,7 @@ try
 
     app.MapGet("/status", (
         SessionManager sessions, GameLoop loop, GameWorld world,
-        CharacterPositionSaver saver, InventorySaver invSaver, EconomySaver econSaver) =>
+        CharacterPositionSaver saver, InventorySaver invSaver, EconomySaver econSaver, FarmTileSaver farmSaver) =>
     {
         var stats = loop.Metrics.Snapshot();
         return Results.Json(new
@@ -197,6 +213,7 @@ try
                 pendingSaves = saver.PendingCount,
                 pendingInventorySaves = invSaver.PendingCount,
                 pendingEconomySaves = econSaver.PendingCount,
+                pendingFarmSaves = farmSaver.PendingCount,
             },
             tick = new
             {

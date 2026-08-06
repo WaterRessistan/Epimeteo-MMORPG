@@ -1,0 +1,10 @@
+{
+  "key": "crop.wheat",
+  "displayName": "Trigo",
+  "seedDefKey": "item.wheat_seed",
+  "yieldDefKey": "item.wheat",
+  "yieldQuantity": 3,
+  "growthDaysNeeded": 3,
+  "season": "Any",
+  "stages": ["brote", "creciendo", "maduro"]
+}

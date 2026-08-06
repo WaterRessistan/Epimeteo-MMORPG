@@ -43,6 +43,13 @@ public enum ResultCode : ushort
     NotReadyToHarvest = 503,
     WrongSeason = 504,
 
+    /// <summary>
+    /// Hueco real cerrado en la Fase 8: 500–504 no cubrían "la herramienta equipada no es la que
+    /// hace falta" (mismo criterio que <c>ShopRepair</c> en la Fase 7 — siguiente valor libre del
+    /// bloque ya reservado, sin abrir opcode nuevo).
+    /// </summary>
+    WrongTool = 505,
+
     TargetNotFound = 600,
     TargetDead = 601,
     OnCooldown = 602,

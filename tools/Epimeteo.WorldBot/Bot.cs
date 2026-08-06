@@ -111,6 +111,12 @@ internal sealed class Bot : IAsyncDisposable
     /// <summary>Últimos cambios de inventario vistos, por hueco — para comprobar que reparar subió la durabilidad.</summary>
     public Dictionary<(ContainerId Container, byte Slot), ItemStackInfo?> LastInventoryChanges { get; } = [];
 
+    /// <summary>Último estado conocido de cada tile de granja, por coordenada (FASE-08 §9).</summary>
+    public Dictionary<(int X, int Y), FarmTileInfo> LastFarmTiles { get; } = [];
+
+    /// <summary><c>SystemMessage</c> recibidos en la fase actual — así se ven los fallos de granja (<c>farm.{ResultCode}</c>, sin opcode de resultado propio).</summary>
+    public List<S2CSystemMessage> SystemMessages { get; } = [];
+
     public int Corrections => Prediction?.Corrections ?? 0;
 
     public float MaxErrorTiles => Prediction?.MaxErrorTiles ?? 0f;
@@ -306,6 +312,7 @@ internal sealed class Bot : IAsyncDisposable
         Snapshots = 0;
         ShopResults.Clear();
         LastInventoryChanges.Clear();
+        SystemMessages.Clear();
     }
 
     /// <summary>Manda un mensaje de inmediato, sin pasar por el simulador de latencia (acciones discretas, no movimiento).</summary>
@@ -363,6 +370,18 @@ internal sealed class Bot : IAsyncDisposable
 
             case Opcode.Kick when FrameCodec.TryDecodePayload<S2CKick>(frame, out var kick) && kick is not null:
                 Kicked = kick.Reason;
+                break;
+
+            case Opcode.FarmTileUpdate when FrameCodec.TryDecodePayload<S2CFarmTileUpdate>(frame, out var farm) && farm is not null:
+                foreach (var tile in farm.Tiles)
+                {
+                    LastFarmTiles[(tile.TileX, tile.TileY)] = tile;
+                }
+
+                break;
+
+            case Opcode.SystemMessage when FrameCodec.TryDecodePayload<S2CSystemMessage>(frame, out var sysMsg) && sysMsg is not null:
+                SystemMessages.Add(sysMsg);
                 break;
 
             default:

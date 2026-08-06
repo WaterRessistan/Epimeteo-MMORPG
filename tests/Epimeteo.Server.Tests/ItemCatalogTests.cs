@@ -23,7 +23,10 @@ public sealed class ItemCatalogTests
     [InlineData("item.health_potion", ItemType.Consumable)]
     [InlineData("item.iron_ore", ItemType.Material)]
     [InlineData("item.wheat_seed", ItemType.Seed)]
-    public void Constructor_CargaLosSieteItems(string key, ItemType expectedType)
+    [InlineData("item.wheat", ItemType.Material)]
+    [InlineData("item.hoe", ItemType.Weapon)]
+    [InlineData("item.watering_can", ItemType.Weapon)]
+    public void Constructor_CargaLosDiezItems(string key, ItemType expectedType)
     {
         var catalog = LoadItems();
 
@@ -32,9 +35,19 @@ public sealed class ItemCatalogTests
     }
 
     [Fact]
-    public void SonSieteItems_NiUnoMas()
+    public void SonDiezItems_NiUnoMas()
     {
-        Assert.Equal(7, LoadItems().All.Count);
+        Assert.Equal(10, LoadItems().All.Count);
+    }
+
+    [Theory]
+    [InlineData("item.hoe", FarmToolAction.Till)]
+    [InlineData("item.watering_can", FarmToolAction.Water)]
+    public void HerramientasDeGranja_DeclaranSuAccion(string key, FarmToolAction expected)
+    {
+        Assert.True(LoadItems().TryGet(key, out var tool));
+        Assert.Equal(EquipCategory.Tool, tool!.EquipCategory);
+        Assert.Equal(expected, tool.FarmToolAction);
     }
 
     [Fact]

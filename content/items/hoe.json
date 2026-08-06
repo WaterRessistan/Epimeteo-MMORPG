@@ -1,0 +1,8 @@
+{
+  "key": "item.hoe",
+  "displayName": "Azada",
+  "type": "Weapon",
+  "maxStack": 1,
+  "equipCategory": "Tool",
+  "farmToolAction": "Till"
+}

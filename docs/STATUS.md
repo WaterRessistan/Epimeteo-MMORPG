@@ -1,22 +1,22 @@
 # STATUS — Epimeteo MMORPG
 
-**Última actualización:** 2026-08-05 · **Fase actual:** 7 COMPLETA (tiendas y armero) →
-arranca Fase 8. Desplegado en producción: `wss://epimeteo.waterressistan.duckdns.org/ws`
+**Última actualización:** 2026-08-06 · **Fase actual:** 8 COMPLETA (granja y cultivos) →
+arranca Fase 9. Desplegado en producción: `wss://epimeteo.waterressistan.duckdns.org/ws`
 
 ## Estado
 
 | Área | Estado |
 |---|---|
 | Diseño y arquitectura | ✅ Cerrado (`docs/00`, `01`, `02`, `03`) |
-| Repositorio git | ✅ Fases 0–6 commiteadas; Fase 7 lista para commitear |
+| Repositorio git | ✅ Fases 0–7 commiteadas; Fase 8 lista para commitear |
 | Solución .NET | ✅ `Epimeteo.sln` (Shared + Server + Server.Tests + Shared.Tests + tools) |
-| Protocolo | ✅ **Versión 2** (sin cambios de forma: los mensajes de tienda ya estaban reservados desde la Fase 1, salvo `ShopRepair`, hueco real cerrado esta fase sin subir versión). Auth, personajes, mundo, inventario/equipo **y tienda** (`ShopOpen/Buy/Sell/Close/Repair`, `ShopData`, `ShopResult`, `CurrencyUpdate`) tipados |
-| Servidor | ✅ Lo anterior + **tiendas autoritativas en memoria** (`ShopSystem`, puro, sin I/O; `ShopRuntime` con stock y restock por temporizador real), oro persistido junto a la posición, `economy_log` append-only |
-| Cliente Godot | ⚠️ Conecta, handshake, login/registro, `CharacterSelect`, `World.tscn`, overlay de inventario (tecla `I`) y **overlay de tienda** (tecla `E` sobre un NPC: comprar/vender/reparar). Compila sin warnings, pero **no se ha ejecutado nunca**: no hay Godot en este servidor headless |
-| Tests | ✅ **117/117 compartidos + 128/128 servidor en verde** (0 saltados) |
-| Base de datos | ✅ Postgres 16.14; `0001_init.sql` + `0002_character_name_format.sql` + `0003_shops_economy.sql` (`shop_stock`, `economy_log`) aplicadas |
-| Contenido (`content/`) | ✅ `content/classes/*.json` (+`startingItems`, **+`startingGold`**) + `content/maps/map.village.json` + `content/items/*.json` (7 ítems, 2 con `durabilityMax`) + **`content/shops/*.json`** (`general_store`, `armory`, con su NPC cada una) |
-| Despliegue | ✅ **En producción**: `epimeteo.service` (systemd, usuario dedicado, `Restart=always`, `ProtectSystem=strict`), nginx + TLS propio en `epimeteo.waterressistan.duckdns.org`, backup diario de Postgres por timer. Fase 7 ya desplegada con `deploy/publish.sh` y verificada contra el servicio real |
+| Protocolo | ✅ **Versión 2** (sin cambios de forma: los 5 opcodes de granja ya estaban reservados desde la Fase 1, sin ningún hueco real esta vez). Auth, personajes, mundo, inventario/equipo, tienda **y granja** (`FarmTill/Plant/Water/Harvest`, `FarmTileUpdate`) tipados |
+| Servidor | ✅ Lo anterior + **granja autoritativa en memoria** (`FarmSystem`, puro, sin I/O; el crecimiento diario se calcula en el tick, no con un `UPDATE` SQL directo — FASE-08 §2 D1), `farm_tiles` persistidos como instantánea por tile igual que el resto |
+| Cliente Godot | ⚠️ Conecta, handshake, login/registro, `CharacterSelect`, `World.tscn`, overlays de inventario (`I`) y tienda (`E`), y **`NetClient` recibe `FarmTileUpdate`** (sin pantalla de granja dedicada, fuera de alcance de esta fase). Compila sin warnings, pero **no se ha ejecutado nunca**: no hay Godot en este servidor headless |
+| Tests | ✅ **117/117 compartidos + 173/173 servidor en verde** (0 saltados) |
+| Base de datos | ✅ Postgres 16.14; `0001`–`0004` aplicadas (`0004_farm.sql`: `farm_plots`, `farm_tiles`, `farm_calendar`, con la parcela comunitaria de `map.village` ya sembrada) |
+| Contenido (`content/`) | ✅ Lo de la Fase 7 + `content/items/{wheat,hoe,watering_can}.json` (las dos herramientas venden en `general_store`) + **`content/crops/wheat.json`** |
+| Despliegue | ✅ **En producción**: `epimeteo.service` (systemd, usuario dedicado, `Restart=always`, `ProtectSystem=strict`), nginx + TLS propio en `epimeteo.waterressistan.duckdns.org`, backup diario de Postgres por timer. Fase 8 ya desplegada con `deploy/publish.sh` y verificada contra el servicio real |
 
 ## Entorno
 
@@ -487,21 +487,98 @@ arriba, corregido y re-verificado antes de seguir) antes de dar la fase por cerr
    `systemctl restart epimeteo` sin pérdida — mismo criterio que posición e inventario en las
    Fases 4 y 6.
 
+## Hecho en la Fase 8 — Granja y cultivos
+
+Plan completo en `docs/fases/FASE-08-granja-cultivos.md` (incluye una §11 añadida al cerrar, con
+lo que pasó de verdad frente a lo planeado). Esquema de BD y los 5 opcodes de granja ya estaban
+cerrados desde las Fases 0–1 — a diferencia de las Fases 6–7, **sin ningún hueco real en el
+protocolo**. Lo que sí había que decidir de cero era cómo encajaba el job diario (`docs/00 §7`
+lo describía como un `UPDATE` SQL directo) en la arquitectura de tick-autoritativo ya fijada.
+
+- **El job diario se calcula en memoria, dentro del tick, no como SQL directo** (D1): un
+  `UPDATE` masivo aparte de la cola de guardado por acción del jugador habría sido un segundo
+  escritor de `farm_tiles` compitiendo con el primero — condición de carrera real que ningún otro
+  sistema del proyecto tiene. `SweepFarmGrowth` corre una vez por segundo (como `SweepRestock` de
+  la Fase 7), recupera tantos días de las 05:00 UTC como hayan pasado desde `farm_calendar.
+  last_day_index` (uno a uno, así se recuperan días perdidos si el servidor estuvo caído) y
+  encola el guardado de cada tile que cambió por la cola de siempre.
+- `db/migrations/0004_farm.sql`: `farm_plots`/`farm_tiles` tal cual `docs/02`, más `farm_calendar`
+  (nueva, una fila). Parcela comunitaria sembrada por la propia migración en `map.village`
+  (origen 6,82, 8×6) — sin propiedad ni compra de parcelas esta fase (`owner_char_id` se queda
+  `NULL`, ya anticipado en el esquema).
+- `Server/Content/`: `CropDefinition`/`CropLoader`/`CropCatalog` — servidor-only (como
+  `ClassCatalog`/`MapCatalog`, no como `ItemCatalog`/`ShopCatalog`): el cliente no necesita el
+  catálogo, pinta el `Stage` que ya resuelve el servidor. `content/crops/wheat.json`
+  (`growthDaysNeeded: 3`, `season: "Any"` a propósito — FASE-08 §2 D8 — para que la verificación
+  E2E no dependa de en qué mes real se ejecute).
+- `Shared/Data/`: `FarmTileStatus`, `FarmToolAction`. `ItemDefinition` gana `FarmToolAction?`:
+  con un único hueco de herramienta (`EquipSlot.Tool`, reservado desde la Fase 6), sin esto no
+  hay forma de exigir "la herramienta correcta" para arar frente a regar. `content/items/
+  {hoe,watering_can}.json`, vendidas en `general_store`; `ResultCode.WrongTool = 505` (hueco real
+  cerrado, mismo criterio que `ShopRepair` en la Fase 7).
+- `Server/Farm/`: `FarmSystem` (puro, como `ShopSystem`), `FarmCalendar` (aritmética de día de
+  granja y estación, pura), `FarmRuntime`/`FarmPlotRuntime` (mismo patrón que `ShopRuntime`).
+  `Persistence/Farm/`: repositorios Dapper + `FarmTileSaver` (misma cola-descarta-lo-viejo que
+  posición/inventario/economía).
+- **Cliente Godot:** `NetClient` gana `FarmTileUpdateReceived` y los 4 `Send*`. Sin pantalla de
+  granja dedicada esta fase (fuera de alcance explícito, §7 del plan) — el patrón ya está
+  probado tres veces (inventario, tienda), no aporta verificación nueva escribirlo ahora sin
+  poder ejecutarlo.
+
+### Dos hallazgos reales, ninguno anticipado en el plan — encontrados al escribir la verificación E2E, no por lectura de código
+
+- **Ninguna de las cuatro acciones de granja comprobaba la distancia al tile.** CLAUDE.md §4 es
+  explícito y no negociable ("toda petición se valida en servidor contra... distancia") y las
+  tiendas ya lo hacían desde la Fase 7 — un descuido real al portar el patrón, no una decisión
+  consciente. Corregido con `IsWithinFarmRange` (2 tiles) y `ResultCode.TooFarAway` reutilizado,
+  en las cuatro acciones, antes de cerrar la fase.
+- **La propia herramienta de verificación tenía la cuenta mal, no el servidor:** el guion regaba
+  una sola vez y luego "adelantaba 3 días" esperando ver el trigo maduro (`growthDaysNeeded: 3`).
+  Pero regar acelera un día concreto, no todos los que vengan (D1): el progreso real fue
+  `1,0 + 0,5 + 0,5 = 2,0`, no `3,0` — el tile se quedó `Planted`. La lógica del servidor estaba
+  bien; la expectativa del test no. Corregido rodando 6 días (el margen del peor caso
+  "abandonado" de `docs/00 §7`). De paso confirmó que hace falta reiniciar el servicio para que
+  el barrido note un `farm_calendar` movido a mano por SQL — el barrido compara contra lo que ya
+  tiene en memoria, no relee Postgres solo; en producción esto nunca hace falta porque el índice
+  sólo avanza.
+
+### Verificación Fase 8 (esta sesión, contra el servicio de producción real)
+
+Desplegada con `deploy/publish.sh` antes de verificar.
+
+1. ✅ `dotnet build` sin warnings; `dotnet test`: **117/117 compartidos + 173/173 servidor**
+   (+40 sobre los 133 previos: `FarmSystemTests`, `FarmCalendarTests`, `CropCatalogTests` puros,
+   `FarmTileRepositoryTests`/`FarmCalendarRepositoryTests` contra Postgres real).
+2. ✅ `dotnet build client/Epimeteo.Client.csproj`: sin warnings. UI no ejercitada a mano (sigue
+   sin haber Godot en este servidor headless).
+3. ✅ `tools/Epimeteo.WorldBot --farm-plant`: comprar azada+regadera+semilla, caminar ~45 tiles
+   hasta la parcela, arar, plantar, regar. **8/8 comprobaciones en verde.**
+4. ✅ Entre medias, `UPDATE farm_calendar SET last_day_index = last_day_index - 6` + `systemctl
+   restart epimeteo` (recuperación real de días perdidos, no simulada) y
+   `tools/Epimeteo.WorldBot --farm-harvest <username>`: el tile ya en `Ready` al reconectar,
+   cosechar da trigo de verdad y el tile vuelve a `Tilled`. **5/5 comprobaciones en verde.**
+5. ✅ Verificado en `psql`: `state`/`crop_key`/`growth_days` del tile cosechado sobreviven un
+   `systemctl restart epimeteo` sin pérdida — mismo criterio que posición/inventario/economía en
+   las Fases 4/6/7.
+
 ## Siguiente sesión
 
-**Fase 8 — Granja y cultivos · Sonnet.** Siguiente en `docs/03-roadmap-fases.md`.
+**Fase 9 — Combate, monstruos y PvP · Opus.** Siguiente en `docs/03-roadmap-fases.md` — **cambio
+de modelo obligatorio** (CLAUDE.md §6: netcode/PvP/seguridad son de las fases reservadas a Opus,
+como las Fases 0, 1 y 4).
 
 **Pendiente aparte, en cuanto haya una máquina con entorno gráfico:** abrir `client/project.godot`
 en Godot 4.5 y comprobar el punto 7 del criterio de la Fase 4 (dos clientes viéndose mover), el
-overlay de inventario de la Fase 6 (drag & drop de verdad, tecla `I`) **y** el overlay de tienda
-de la Fase 7 (tecla `E`, comprar/vender/reparar de verdad con el ratón). El HUD de mundo da los
-números de predicción sin herramientas; ni el inventario ni la tienda tienen ese instrumento —
-hay que mirarlos. Ahora que el juego está en producción, el cliente puede apuntar a
+overlay de inventario de la Fase 6 (drag & drop de verdad, tecla `I`) y el overlay de tienda de
+la Fase 7 (tecla `E`, comprar/vender/reparar de verdad con el ratón) — la granja de esta fase no
+tiene overlay que probar todavía (§7 del plan). El HUD de mundo da los números de predicción sin
+herramientas; ni el inventario ni la tienda tienen ese instrumento — hay que mirarlos. Ahora que
+el juego está en producción, el cliente puede apuntar a
 `wss://epimeteo.waterressistan.duckdns.org/ws` en vez de `127.0.0.1`.
 
 **Pendiente de decidir, no técnico:** los datos de prueba acumulados en la BD (cuentas `Bot*`/
-`smoke_*` de `SmokeClient`/`WorldBot` a lo largo de las Fases 1–6) — si el juego se va a anunciar
-de verdad, alguien tiene que decidir si se limpian antes. Esta sesión no ha borrado nada.
+`smoke_*`/`farm_*` de `SmokeClient`/`WorldBot` a lo largo de las Fases 1–8) — si el juego se va a
+anunciar de verdad, alguien tiene que decidir si se limpian antes. Esta sesión no ha borrado nada.
 
 **Verificación real que sólo puede hacer un humano:** conectar desde un móvil en datos 4G (no
 en la red del servidor) a `wss://epimeteo.waterressistan.duckdns.org/ws` con el cliente Godot, en
@@ -546,4 +623,10 @@ dotnet run --project tools/Epimeteo.SmokeClient
 dotnet run --project tools/Epimeteo.WorldBot -- --shops-buy
 # UPDATE item_instances SET durability = 40 WHERE owner_char_id = <characterId> AND container = 1 AND slot = 0;
 dotnet run --project tools/Epimeteo.WorldBot -- --shops-repair <username>
+
+# Granja (Fase 8): dos corridas, recuperación real de días perdidos vía psql + reinicio entre medias
+dotnet run --project tools/Epimeteo.WorldBot -- --farm-plant
+# UPDATE farm_calendar SET last_day_index = last_day_index - 6;
+# sudo systemctl restart epimeteo
+dotnet run --project tools/Epimeteo.WorldBot -- --farm-harvest <username>
 ```

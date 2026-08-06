@@ -45,6 +45,20 @@ internal static class Program
             return await ShopsRepairPhase(url, map, username);
         }
 
+        // Flujo de granja de la Fase 8 (FASE-08-granja-cultivos.md §9): mismo motivo que el de
+        // tiendas — dos corridas separadas con una manipulación de Postgres a mano entre medias,
+        // esta vez para simular que pasaron 3 días de granja de verdad sin esperarlos.
+        if (args.Contains("--farm-plant"))
+        {
+            return await FarmPlantPhase(url, map);
+        }
+
+        if (args.Contains("--farm-harvest"))
+        {
+            var username = Arg(args, "--farm-harvest") ?? throw new InvalidOperationException("--farm-harvest necesita el username de la fase de plantar.");
+            return await FarmHarvestPhase(url, map, username);
+        }
+
         var run = Guid.NewGuid().ToString("N")[..6];
 
         Console.WriteLine($"Servidor : {url}");
@@ -262,6 +276,180 @@ internal static class Program
         {
             await bot.DisposeAsync();
         }
+    }
+
+    /// <summary>
+    /// Fase 1 del flujo de granja (FASE-08-granja-cultivos.md §9): comprar azada, regadera y
+    /// semilla en el almacén general, caminar a la parcela comunitaria, arar, plantar y regar.
+    /// Termina imprimiendo el <c>username</c> para <see cref="FarmHarvestPhase"/>.
+    /// <code>dotnet run --project tools/Epimeteo.WorldBot -- --farm-plant [url]</code>
+    /// </summary>
+    private static async Task<int> FarmPlantPhase(string url, GameMap map)
+    {
+        // Esquina de la parcela comunitaria sembrada por 0004_farm.sql (origin 6,82).
+        var tileX = 6;
+        var tileY = 82;
+        var run = Guid.NewGuid().ToString("N")[..8];
+        var bot = new Bot(url, $"farm_{run}", $"Farm_{run}", map, lagMs: 0);
+
+        try
+        {
+            Console.WriteLine("· Fase 1: comprar herramientas, arar, plantar y regar");
+            await bot.ConnectAsync(register: true);
+            await Run([bot], 300);
+
+            var store = bot.KnownEntities.Values.FirstOrDefault(e => e.DefKey == "shop.general_store");
+            Check("El NPC del almacén general está visible al entrar", store is not null);
+            if (store is null)
+            {
+                return Summarize();
+            }
+
+            bot.WalkTarget = new Vec2(store.X, store.Y);
+            await Run([bot], 6000);
+            Check("El bot llegó de verdad junto al NPC caminando", bot.WalkTarget is null);
+
+            bot.SendNow(Opcode.ShopOpen, new C2SShopOpen { NpcEntityId = store.Id });
+            await Run([bot], 500);
+            Check("ShopOpen cerca del NPC → ShopData", bot.LastShopData is { ShopKey: "shop.general_store" });
+            if (bot.LastShopData is not { } shopData)
+            {
+                return Summarize();
+            }
+
+            BuyOne(bot, shopData, "item.hoe");
+            BuyOne(bot, shopData, "item.watering_can");
+            BuyOne(bot, shopData, "item.wheat_seed");
+            await Run([bot], 500);
+
+            var hoeSlot = FindBagSlot(bot, "item.hoe");
+            var wateringCanSlot = FindBagSlot(bot, "item.watering_can");
+            var seedSlot = FindBagSlot(bot, "item.wheat_seed");
+            Check("Se compraron azada, regadera y semilla", hoeSlot is not null && wateringCanSlot is not null && seedSlot is not null);
+            if (hoeSlot is not { } hoe || wateringCanSlot is not { } wateringCan || seedSlot is not { } seed)
+            {
+                return Summarize();
+            }
+
+            var plotCenter = new Vec2(tileX + 0.5f, tileY + 0.5f);
+            bot.WalkTarget = plotCenter;
+            await Run([bot], 15000);
+            Check("El bot llegó de verdad a la parcela caminando", bot.WalkTarget is null);
+
+            bot.SendNow(Opcode.Equip, new C2SEquip { Container = hoe.Container, Slot = hoe.Slot, EquipSlot = EquipSlot.Tool });
+            await Run([bot], 300);
+
+            bot.SendNow(Opcode.FarmTill, new C2SFarmTill { TileX = tileX, TileY = tileY });
+            await Run([bot], 500);
+            Check("Arar deja el tile arado", bot.LastFarmTiles.GetValueOrDefault((tileX, tileY))?.State == FarmTileStatus.Tilled);
+
+            bot.SendNow(Opcode.FarmPlant, new C2SFarmPlant
+            {
+                TileX = tileX, TileY = tileY, Container = seed.Container, Slot = seed.Slot,
+            });
+            await Run([bot], 500);
+            var afterPlant = bot.LastFarmTiles.GetValueOrDefault((tileX, tileY));
+            Check("Plantar deja el tile plantado con crop.wheat",
+                afterPlant is { State: FarmTileStatus.Planted, CropKey: "crop.wheat" });
+
+            bot.SendNow(Opcode.Equip, new C2SEquip
+            {
+                Container = wateringCan.Container, Slot = wateringCan.Slot, EquipSlot = EquipSlot.Tool,
+            });
+            await Run([bot], 300);
+
+            bot.SendNow(Opcode.FarmWater, new C2SFarmWater { TileX = tileX, TileY = tileY });
+            await Run([bot], 500);
+            Check("Regar marca el tile como regado", bot.LastFarmTiles.GetValueOrDefault((tileX, tileY))?.Watered == true);
+
+            Console.WriteLine($"\nusername={bot.Username}");
+            Console.WriteLine(
+                "\nPara la fase de cosecha: adelanta días de granja por SQL (nada los simula si nadie\n" +
+                "mira, FASE-08 §2 D1). Se regó una sola vez (el día de hoy), así que a partir de ahí\n" +
+                "el progreso sube 0,5/día, no 1,0: growthNeeded=3 necesita al menos 5 días en total\n" +
+                "(1,0 del día regado + 0,5×4) para llegar a Ready — 6 deja margen, igual que el peor\n" +
+                "caso 'abandonado' de docs/00 §7. Hace falta reiniciar el servicio para que relea\n" +
+                "farm_calendar (el barrido sólo compara contra lo que ya tiene en memoria). P. ej.:\n" +
+                "  UPDATE farm_calendar SET last_day_index = last_day_index - 6;\n" +
+                "  sudo systemctl restart epimeteo\n");
+
+            return Summarize();
+        }
+        finally
+        {
+            await bot.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Fase 2 del flujo de granja: reconecta con el personaje de <see cref="FarmPlantPhase"/> y
+    /// cosecha, tras el barrido diario del servidor real (no simulado por el bot) haber puesto el
+    /// tile en <c>Ready</c>.
+    /// <code>dotnet run --project tools/Epimeteo.WorldBot -- --farm-harvest &lt;username&gt; [url]</code>
+    /// </summary>
+    private static async Task<int> FarmHarvestPhase(string url, GameMap map, string username)
+    {
+        var tileX = 6;
+        var tileY = 82;
+        var bot = new Bot(url, username, "no-hace-falta", map, lagMs: 0);
+
+        try
+        {
+            Console.WriteLine("· Fase 2: cosechar tras 3 días de granja");
+            await bot.ConnectAsync(register: false);
+            await Run([bot], 500);
+
+            var tile = bot.LastFarmTiles.GetValueOrDefault((tileX, tileY));
+            Check($"El tile ya está listo tras recuperar los días perdidos (estado: {tile?.State})",
+                tile?.State == FarmTileStatus.Ready);
+
+            bot.WalkTarget = new Vec2(tileX + 0.5f, tileY + 0.5f);
+            await Run([bot], 15000);
+            Check("El bot llegó de verdad a la parcela caminando", bot.WalkTarget is null);
+
+            var goldBefore = bot.Gold;
+            bot.LastInventoryChanges.Clear();
+            bot.SendNow(Opcode.FarmHarvest, new C2SFarmHarvest { TileX = tileX, TileY = tileY });
+            await Run([bot], 500);
+
+            var harvested = bot.LastInventoryChanges.Values.FirstOrDefault(item => item?.DefKey == "item.wheat");
+            Check($"Cosechar da trigo de verdad (cantidad {harvested?.Quantity}, calidad {harvested?.Quality})",
+                harvested is { Quantity: > 0 });
+            Check("Cosechar deja el tile arado, no virgen",
+                bot.LastFarmTiles.GetValueOrDefault((tileX, tileY))?.State == FarmTileStatus.Tilled);
+            Check("Cosechar no cuesta ni da oro", bot.Gold == goldBefore);
+
+            return Summarize();
+        }
+        finally
+        {
+            await bot.DisposeAsync();
+        }
+    }
+
+    private static void BuyOne(Bot bot, S2CShopData shop, string defKey)
+    {
+        var slot = Array.FindIndex(shop.Slots, s => s.DefKey == defKey);
+        if (slot < 0)
+        {
+            Check($"La tienda vende '{defKey}'", false);
+            return;
+        }
+
+        bot.SendNow(Opcode.ShopBuy, new C2SShopBuy { ShopSlot = (byte)slot, Quantity = 1, ExpectedPrice = shop.Slots[slot].PriceBuy });
+    }
+
+    private static (ContainerId Container, byte Slot)? FindBagSlot(Bot bot, string defKey)
+    {
+        foreach (var (key, item) in bot.LastInventoryChanges)
+        {
+            if (item?.DefKey == defKey)
+            {
+                return key;
+            }
+        }
+
+        return null;
     }
 
     private static int Summarize()

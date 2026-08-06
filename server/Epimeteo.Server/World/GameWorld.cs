@@ -1,6 +1,8 @@
 using Epimeteo.Server.Content;
+using Epimeteo.Server.Farm;
 using Epimeteo.Server.Inventory;
 using Epimeteo.Server.Persistence.Economy;
+using Epimeteo.Server.Persistence.Farm;
 using Epimeteo.Server.Persistence.Items;
 using Epimeteo.Server.Shop;
 using Epimeteo.Shared.Data;
@@ -24,6 +26,15 @@ public sealed class GameWorld
     /// <summary>Radio de interacción con un NPC de tienda, en tiles (FASE-07 §2 D7).</summary>
     private const float ShopInteractionRangeTiles = 3f;
 
+    /// <summary>
+    /// Radio de interacción con un tile de granja, en tiles. CLAUDE.md §4 es explícito: toda
+    /// petición se valida contra distancia real, y las cuatro acciones de granja no son la
+    /// excepción — mismo criterio que <see cref="ShopInteractionRangeTiles"/>, aunque
+    /// <c>FASE-08-granja-cultivos.md</c> no lo mencionara aparte (D6 sólo cubre "el tile existe",
+    /// no "está cerca").
+    /// </summary>
+    private const float FarmInteractionRangeTiles = 2f;
+
     private readonly Dictionary<string, Zone> _zones = new(StringComparer.Ordinal);
     private readonly WorldInbox _inbox;
     private readonly IPositionSink _positions;
@@ -33,6 +44,9 @@ public sealed class GameWorld
     private readonly ShopCatalog _shops;
     private readonly ShopRuntime _shopRuntime;
     private readonly IEconomySink _economySink;
+    private readonly CropCatalog _crops;
+    private readonly FarmRuntime _farmRuntime;
+    private readonly IFarmSink _farmSink;
     private readonly int _saveIntervalTicks;
     private readonly string _fallbackMapKey;
     private readonly ILogger _log = Log.ForContext<GameWorld>();
@@ -47,6 +61,9 @@ public sealed class GameWorld
         ShopCatalog shops,
         ShopRuntime shopRuntime,
         IEconomySink economySink,
+        CropCatalog crops,
+        FarmRuntime farmRuntime,
+        IFarmSink farmSink,
         EntityIdAllocator entityIds,
         int saveIntervalSeconds = 30)
     {
@@ -58,6 +75,9 @@ public sealed class GameWorld
         _shops = shops;
         _shopRuntime = shopRuntime;
         _economySink = economySink;
+        _crops = crops;
+        _farmRuntime = farmRuntime;
+        _farmSink = farmSink;
         _saveIntervalTicks = saveIntervalSeconds * SimulationConstants.TickRate;
 
         var npcsByMap = new Dictionary<string, List<NpcEntity>>(StringComparer.Ordinal);
@@ -114,6 +134,7 @@ public sealed class GameWorld
 
         SweepSaves(tick);
         SweepRestock(tick);
+        SweepFarmGrowth(tick);
     }
 
     /// <summary>
@@ -187,6 +208,14 @@ public sealed class GameWorld
         // equipo puesto más los stats derivados, que también hace falta calcular por primera vez.
         player.Peer.Send(Opcode.InventoryFull, new S2CInventoryFull { Items = BagItems(player) });
         SendEquipmentUpdate(player);
+
+        foreach (var plot in _farmRuntime.Plots)
+        {
+            if (plot.MapKey == zone.Map.Key)
+            {
+                player.Peer.Send(Opcode.FarmTileUpdate, BuildFarmTileUpdate(plot, DateTimeOffset.UtcNow));
+            }
+        }
     }
 
     private void HandleLeave(int sessionId)
@@ -264,6 +293,22 @@ public sealed class GameWorld
 
                 case Opcode.ShopRepair:
                     HandleShopRepair(message);
+                    break;
+
+                case Opcode.FarmTill:
+                    HandleFarmTill(message);
+                    break;
+
+                case Opcode.FarmPlant:
+                    HandleFarmPlant(message);
+                    break;
+
+                case Opcode.FarmWater:
+                    HandleFarmWater(message);
+                    break;
+
+                case Opcode.FarmHarvest:
+                    HandleFarmHarvest(message);
                     break;
 
                 default:
@@ -720,6 +765,12 @@ public sealed class GameWorld
     private static bool IsWithinShopRange(PlayerEntity player, WorldEntity npc) =>
         Vec2.DistanceSquared(player.State.Pos, npc.State.Pos) <= ShopInteractionRangeTiles * ShopInteractionRangeTiles;
 
+    private static bool IsWithinFarmRange(PlayerEntity player, FarmTileState tile)
+    {
+        var tileCenter = new Vec2(tile.TileX + 0.5f, tile.TileY + 0.5f);
+        return Vec2.DistanceSquared(player.State.Pos, tileCenter) <= FarmInteractionRangeTiles * FarmInteractionRangeTiles;
+    }
+
     private static void SendShopFailure(PlayerEntity player, ResultCode code) =>
         player.Peer.Send(Opcode.ShopResult, new S2CShopResult { Ok = false, Code = code });
 
@@ -823,6 +874,278 @@ public sealed class GameWorld
                         player.Peer.Send(Opcode.ShopData, BuildShopData(shop, stock));
                     }
                 }
+            }
+        }
+    }
+
+    // ── Granja ───────────────────────────────────────────────────────────
+
+    private void HandleFarmTill(in WorldMessage message)
+    {
+        if (!FrameCodec.TryDecodeBody<C2SFarmTill>(message.Payload, out var till) || till is null)
+        {
+            _log.Warning("FarmTill ilegible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (FindPlayerZone(message.SessionId) is not { } found)
+        {
+            return;
+        }
+
+        var (zone, player) = found;
+        if (ResolveFarmTile(zone, till.TileX, till.TileY, message.SessionId) is not { } resolved)
+        {
+            return;
+        }
+
+        var (plot, tile) = resolved;
+        if (!IsWithinFarmRange(player, tile))
+        {
+            SendFarmFailure(player, ResultCode.TooFarAway);
+            return;
+        }
+
+        var result = FarmSystem.TryTill(tile, player.Inventory, _items);
+        if (!result.Ok)
+        {
+            SendFarmFailure(player, result.Code);
+            return;
+        }
+
+        BroadcastFarmTileUpdate(plot);
+        _farmSink.Enqueue(FarmTileSave.From(plot.PlotId, tile));
+    }
+
+    private void HandleFarmPlant(in WorldMessage message)
+    {
+        if (!FrameCodec.TryDecodeBody<C2SFarmPlant>(message.Payload, out var plant) || plant is null)
+        {
+            _log.Warning("FarmPlant ilegible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (!InventoryConstants.IsWellFormedSlot(plant.Container, plant.Slot))
+        {
+            _log.Warning("FarmPlant con hueco imposible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (FindPlayerZone(message.SessionId) is not { } found)
+        {
+            return;
+        }
+
+        var (zone, player) = found;
+        if (ResolveFarmTile(zone, plant.TileX, plant.TileY, message.SessionId) is not { } resolved)
+        {
+            return;
+        }
+
+        var (plot, tile) = resolved;
+        if (!IsWithinFarmRange(player, tile))
+        {
+            SendFarmFailure(player, ResultCode.TooFarAway);
+            return;
+        }
+
+        var result = FarmSystem.TryPlant(
+            tile, player.Inventory, _items, _crops, plant.Container, plant.Slot, DateTimeOffset.UtcNow);
+        if (!result.Ok)
+        {
+            SendFarmFailure(player, result.Code);
+            return;
+        }
+
+        if (result.InventoryTouched.Count > 0)
+        {
+            ApplyResult(player, new InventoryOpResult(true, ResultCode.Ok, result.InventoryTouched));
+        }
+
+        BroadcastFarmTileUpdate(plot);
+        _farmSink.Enqueue(FarmTileSave.From(plot.PlotId, tile));
+    }
+
+    private void HandleFarmWater(in WorldMessage message)
+    {
+        if (!FrameCodec.TryDecodeBody<C2SFarmWater>(message.Payload, out var water) || water is null)
+        {
+            _log.Warning("FarmWater ilegible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (FindPlayerZone(message.SessionId) is not { } found)
+        {
+            return;
+        }
+
+        var (zone, player) = found;
+        if (ResolveFarmTile(zone, water.TileX, water.TileY, message.SessionId) is not { } resolved)
+        {
+            return;
+        }
+
+        var (plot, tile) = resolved;
+        if (!IsWithinFarmRange(player, tile))
+        {
+            SendFarmFailure(player, ResultCode.TooFarAway);
+            return;
+        }
+
+        var result = FarmSystem.TryWater(tile, player.Inventory, _items, DateTimeOffset.UtcNow);
+        if (!result.Ok)
+        {
+            SendFarmFailure(player, result.Code);
+            return;
+        }
+
+        BroadcastFarmTileUpdate(plot);
+        _farmSink.Enqueue(FarmTileSave.From(plot.PlotId, tile));
+    }
+
+    private void HandleFarmHarvest(in WorldMessage message)
+    {
+        if (!FrameCodec.TryDecodeBody<C2SFarmHarvest>(message.Payload, out var harvest) || harvest is null)
+        {
+            _log.Warning("FarmHarvest ilegible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (FindPlayerZone(message.SessionId) is not { } found)
+        {
+            return;
+        }
+
+        var (zone, player) = found;
+        if (ResolveFarmTile(zone, harvest.TileX, harvest.TileY, message.SessionId) is not { } resolved)
+        {
+            return;
+        }
+
+        var (plot, tile) = resolved;
+        if (!IsWithinFarmRange(player, tile))
+        {
+            SendFarmFailure(player, ResultCode.TooFarAway);
+            return;
+        }
+
+        var result = FarmSystem.TryHarvest(tile, player.Inventory, _items, _crops);
+        if (!result.Ok)
+        {
+            SendFarmFailure(player, result.Code);
+            return;
+        }
+
+        if (result.InventoryTouched.Count > 0)
+        {
+            ApplyResult(player, new InventoryOpResult(true, ResultCode.Ok, result.InventoryTouched));
+        }
+
+        BroadcastFarmTileUpdate(plot);
+        _farmSink.Enqueue(FarmTileSave.From(plot.PlotId, tile));
+    }
+
+    /// <summary>
+    /// El tile de una acción de granja, revalidado contra la parcela de verdad. Un cliente
+    /// honesto sólo actúa sobre tiles que ha visto en un <c>FarmTileUpdate</c> — todos dentro de
+    /// alguna parcela conocida (FASE-08 §2 D6): si no lo está, no es una jugada legal que falla,
+    /// es un dato imposible con el protocolo cerrado, igual que un <c>InputState</c> con
+    /// dirección fuera de rango (Fase 4).
+    /// </summary>
+    private (FarmPlotRuntime Plot, FarmTileState Tile)? ResolveFarmTile(Zone zone, int tileX, int tileY, int sessionId)
+    {
+        var plot = _farmRuntime.FindPlotContaining(zone.Map.Key, tileX, tileY);
+        if (plot is null || !plot.Tiles.TryGetValue((tileX, tileY), out var tile))
+        {
+            _log.Warning("Acción de granja sobre el tile ({X}, {Y}) fuera de cualquier parcela en la sesión {SessionId}",
+                tileX, tileY, sessionId);
+            KickSession(sessionId, KickReason.ProtocolError);
+            return null;
+        }
+
+        return (plot, tile);
+    }
+
+    private static void SendFarmFailure(PlayerEntity player, ResultCode code) => player.Peer.Send(
+        Opcode.SystemMessage, new S2CSystemMessage { Severity = 0, Key = $"farm.{code}", Args = [] });
+
+    private void BroadcastFarmTileUpdate(FarmPlotRuntime plot)
+    {
+        if (!_zones.TryGetValue(plot.MapKey, out var zone))
+        {
+            return;
+        }
+
+        var update = BuildFarmTileUpdate(plot, DateTimeOffset.UtcNow);
+        foreach (var player in zone.Players)
+        {
+            player.Peer.Send(Opcode.FarmTileUpdate, update);
+        }
+    }
+
+    private S2CFarmTileUpdate BuildFarmTileUpdate(FarmPlotRuntime plot, DateTimeOffset now) => new()
+    {
+        Tiles = [.. plot.Tiles.Values.Select(tile => new FarmTileInfo
+        {
+            TileX = tile.TileX,
+            TileY = tile.TileY,
+            State = tile.Status,
+            CropKey = tile.CropKey,
+            Stage = ComputeStage(tile),
+            Watered = tile.WateredAt is not null,
+            MsRemaining = tile.EtaAt is { } eta ? Math.Max(0, (long)(eta - now).TotalMilliseconds) : 0,
+        })],
+    };
+
+    private byte ComputeStage(FarmTileState tile)
+    {
+        if (tile.CropKey is null || !_crops.TryGet(tile.CropKey, out var crop) || crop.Stages.Length == 0)
+        {
+            return 0;
+        }
+
+        var fraction = tile.GrowthNeeded <= 0 ? 1f : Math.Clamp(tile.GrowthDays / tile.GrowthNeeded, 0f, 1f);
+        var index = (int)(fraction * crop.Stages.Length);
+        return (byte)Math.Min(index, crop.Stages.Length - 1);
+    }
+
+    /// <summary>
+    /// Cierra tantos días de granja como hayan pasado desde el último barrido (recuperación de
+    /// días perdidos, FASE-08 §2 D1), una vez por segundo — el límite es de reloj de pared
+    /// (05:00 UTC), comprobarlo a 20 Hz sería puro desperdicio, mismo criterio que
+    /// <see cref="SweepRestock"/>.
+    /// </summary>
+    private void SweepFarmGrowth(long tick)
+    {
+        if (tick % SimulationConstants.TickRate != 0)
+        {
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var currentDay = FarmCalendar.DayIndex(now);
+
+        while (_farmRuntime.LastProcessedDayIndex < currentDay)
+        {
+            var dayBoundaryEnd = FarmCalendar.BoundaryOf(_farmRuntime.LastProcessedDayIndex + 1);
+            var changed = _farmRuntime.ApplyDailyGrowth(dayBoundaryEnd);
+            _farmRuntime.LastProcessedDayIndex++;
+
+            foreach (var (plot, tile) in changed)
+            {
+                _farmSink.Enqueue(FarmTileSave.From(plot.PlotId, tile));
+            }
+
+            _farmSink.Enqueue(FarmTileSave.Calendar(_farmRuntime.LastProcessedDayIndex));
+
+            foreach (var plot in changed.Select(c => c.Plot).Distinct())
+            {
+                BroadcastFarmTileUpdate(plot);
             }
         }
     }

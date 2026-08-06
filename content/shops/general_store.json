@@ -14,6 +14,8 @@
   "items": [
     { "defKey": "item.health_potion", "priceBuy": 15, "priceSell": 4 },
     { "defKey": "item.iron_ore", "priceBuy": 5, "priceSell": 1, "stockMax": 40 },
-    { "defKey": "item.wheat_seed", "priceBuy": 3, "priceSell": 1, "stockMax": 40 }
+    { "defKey": "item.wheat_seed", "priceBuy": 3, "priceSell": 1, "stockMax": 40 },
+    { "defKey": "item.hoe", "priceBuy": 25, "priceSell": 8, "stockMax": 10 },
+    { "defKey": "item.watering_can", "priceBuy": 25, "priceSell": 8, "stockMax": 10 }
   ]
 }

@@ -1,0 +1,8 @@
+{
+  "key": "item.watering_can",
+  "displayName": "Regadera",
+  "type": "Weapon",
+  "maxStack": 1,
+  "equipCategory": "Tool",
+  "farmToolAction": "Water"
+}

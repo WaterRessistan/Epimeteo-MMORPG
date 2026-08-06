@@ -89,6 +89,9 @@ public partial class NetClient : Node
     /// <summary>Se dispara al entrar al mundo y tras cada compra/venta/reparación con éxito.</summary>
     public event Action<S2CCurrencyUpdate>? CurrencyUpdateReceived;
 
+    /// <summary>Se dispara al entrar al mundo, tras cada acción de granja y en el barrido diario (Fase 8).</summary>
+    public event Action<S2CFarmTileUpdate>? FarmTileUpdateReceived;
+
     /// <summary>Estado actual de la conexión.</summary>
     public ConnectionStatus Status { get; private set; } = ConnectionStatus.Disconnected;
 
@@ -339,6 +342,20 @@ public partial class NetClient : Node
     /// <summary>Cerrar la tienda abierta.</summary>
     public void SendShopClose() => Send(Opcode.ShopClose, new C2SShopClose());
 
+    /// <summary>Arar un tile de una parcela (Fase 8). El servidor valida que es un tile de verdad.</summary>
+    public void SendFarmTill(int tileX, int tileY) => Send(Opcode.FarmTill, new C2SFarmTill { TileX = tileX, TileY = tileY });
+
+    /// <summary>Plantar la semilla de <c>(container, slot)</c> en un tile ya arado.</summary>
+    public void SendFarmPlant(int tileX, int tileY, ContainerId container, byte slot) => Send(
+        Opcode.FarmPlant, new C2SFarmPlant { TileX = tileX, TileY = tileY, Container = container, Slot = slot });
+
+    /// <summary>Regar un tile plantado.</summary>
+    public void SendFarmWater(int tileX, int tileY) => Send(Opcode.FarmWater, new C2SFarmWater { TileX = tileX, TileY = tileY });
+
+    /// <summary>Cosechar un tile listo.</summary>
+    public void SendFarmHarvest(int tileX, int tileY) =>
+        Send(Opcode.FarmHarvest, new C2SFarmHarvest { TileX = tileX, TileY = tileY });
+
     private void PumpIncoming()
     {
         var now = ServerClock.NowMs;
@@ -533,6 +550,14 @@ public partial class NetClient : Node
                 {
                     Gold = currency.Gold;
                     CurrencyUpdateReceived?.Invoke(currency);
+                }
+
+                break;
+
+            case Opcode.FarmTileUpdate:
+                if (FrameCodec.TryDecodePayload<S2CFarmTileUpdate>(frame, out var farmUpdate) && farmUpdate is not null)
+                {
+                    FarmTileUpdateReceived?.Invoke(farmUpdate);
                 }
 
                 break;
