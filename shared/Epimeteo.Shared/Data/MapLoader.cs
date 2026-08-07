@@ -74,7 +74,8 @@ public static class MapLoader
             new RegionSet(regions),
             spawn,
             (Facing)definition.Spawn.Facing,
-            ComputeHash(definition, solid, regions));
+            ComputeHash(definition, solid, regions),
+            ParseSpawnPoints(definition, collision, source));
     }
 
     private static bool[] ParseCollision(MapDefinition definition, string source)
@@ -182,6 +183,47 @@ public static class MapLoader
         }
 
         return spawn;
+    }
+
+    /// <summary>
+    /// Valida los puntos de aparición de monstruos (Fase 9). Un punto dentro de un muro dejaría
+    /// monstruos atrapados en la geometría, así que se caza al cargar y no en producción — mismo
+    /// criterio que con el punto de entrada del mapa.
+    /// </summary>
+    private static MapSpawnPointDefinition[] ParseSpawnPoints(
+        MapDefinition definition, CollisionMap collision, string source)
+    {
+        foreach (var spawn in definition.Spawns)
+        {
+            if (string.IsNullOrWhiteSpace(spawn.MonsterKey))
+            {
+                throw new InvalidDataException($"{source}: hay un punto de aparición sin 'monsterKey'.");
+            }
+
+            if (spawn.Count < 1)
+            {
+                throw new InvalidDataException($"{source}: '{spawn.MonsterKey}' tiene 'count' {spawn.Count}, mínimo 1.");
+            }
+
+            if (spawn.Radius <= 0)
+            {
+                throw new InvalidDataException($"{source}: '{spawn.MonsterKey}' tiene 'radius' {spawn.Radius}, tiene que ser positivo.");
+            }
+
+            if (spawn.RespawnSeconds < 1)
+            {
+                throw new InvalidDataException(
+                    $"{source}: '{spawn.MonsterKey}' tiene 'respawnSeconds' {spawn.RespawnSeconds}, mínimo 1.");
+            }
+
+            if (collision.IsSolid((int)MathF.Floor(spawn.X), (int)MathF.Floor(spawn.Y)))
+            {
+                throw new InvalidDataException(
+                    $"{source}: el punto de aparición de '{spawn.MonsterKey}' en ({spawn.X}, {spawn.Y}) está dentro de un muro.");
+            }
+        }
+
+        return definition.Spawns;
     }
 
     /// <summary>

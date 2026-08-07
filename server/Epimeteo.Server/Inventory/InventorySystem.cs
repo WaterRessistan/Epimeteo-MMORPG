@@ -24,8 +24,13 @@ public readonly record struct InventoryUseResult(bool Ok, ResultCode Code, IRead
     public static InventoryUseResult Fail(ResultCode code) => new(false, code, [], 0);
 }
 
-/// <summary>Stats derivados de base + equipo (FASE-06 §2 D5). Nada de daño/defensa: eso es la Fase 9.</summary>
-public readonly record struct DerivedStats(int HpMax, int MpMax, int StrEffective, int IntEffective, int VitEffective, int DexEffective);
+/// <summary>
+/// Stats derivados de base + equipo (FASE-06 §2 D5). Desde la Fase 9 incluye ataque y defensa,
+/// que la Fase 6 dejó explícitamente fuera por no haber contra qué calcularlos todavía.
+/// </summary>
+public readonly record struct DerivedStats(
+    int HpMax, int MpMax, int StrEffective, int IntEffective, int VitEffective, int DexEffective,
+    int Attack, int Defense);
 
 /// <summary>
 /// Mover, apilar, dividir, tirar, usar, equipar y desequipar — puro dado un
@@ -409,8 +414,13 @@ public static class InventorySystem
     }
 
     /// <summary>
-    /// Stats derivados de base + lo que dé el equipo puesto (FASE-06 §2 D5). Sin daño/defensa:
-    /// no hay combate contra qué calcularlos todavía (Fase 9).
+    /// Stats derivados de base + lo que dé el equipo puesto (FASE-06 §2 D5), incluidos ataque y
+    /// defensa desde la Fase 9.
+    /// <para>
+    /// Ataque y defensa son <b>provisionales</b>, igual que el resto de números de combate: la
+    /// Fase 10 los reajusta con la curva real. Salen de fuerza y vitalidad efectivas, así que el
+    /// equipo ya cuenta a través de sus bonos y no hace falta un campo nuevo en los ítems.
+    /// </para>
     /// </summary>
     public static DerivedStats ComputeDerivedStats(
         PlayerInventory inventory, ItemCatalog catalog, ClassDefinition classDef,
@@ -438,6 +448,6 @@ public static class InventorySystem
             dex += def.BonusDex;
         }
 
-        return new DerivedStats(hpMax, mpMax, str, intStat, vit, dex);
+        return new DerivedStats(hpMax, mpMax, str, intStat, vit, dex, Attack: str, Defense: vit / 2);
     }
 }

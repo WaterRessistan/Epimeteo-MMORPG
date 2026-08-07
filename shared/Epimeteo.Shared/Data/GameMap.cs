@@ -15,7 +15,8 @@ public sealed class GameMap
         RegionSet regions,
         Vec2 spawn,
         Facing spawnFacing,
-        uint hash)
+        uint hash,
+        IReadOnlyList<MapSpawnPointDefinition> spawns)
     {
         Key = key;
         DisplayName = displayName;
@@ -24,6 +25,7 @@ public sealed class GameMap
         Spawn = spawn;
         SpawnFacing = spawnFacing;
         Hash = hash;
+        Spawns = spawns;
     }
 
     /// <summary>Clave estable, ej. <c>map.village</c>.</summary>
@@ -37,6 +39,9 @@ public sealed class GameMap
 
     /// <summary>Regiones y sus flags.</summary>
     public RegionSet Regions { get; }
+
+    /// <summary>Puntos de aparición de monstruos (Fase 9). Sólo los usa el servidor.</summary>
+    public IReadOnlyList<MapSpawnPointDefinition> Spawns { get; }
 
     /// <summary>Punto de aparición por defecto.</summary>
     public Vec2 Spawn { get; }

@@ -28,6 +28,12 @@ public sealed class Session : IWorldPeer
     /// </summary>
     private const int CloseGraceMs = 2000;
 
+    /// <summary>Peso de la última medida en la media móvil del RTT, en porcentaje.</summary>
+    private const int RttSmoothingPercent = 25;
+
+    /// <summary>Por encima de esto, la medida se considera basura y se descarta (FASE-09 §2 D1).</summary>
+    private const int MaxPlausibleRttMs = 5000;
+
     private readonly WebSocket _socket;
     private readonly SessionMessageHandler _handler;
     private readonly Channel<byte[]> _outbound;
@@ -36,6 +42,7 @@ public sealed class Session : IWorldPeer
 
     private long _lastInboundMs;
     private int _kicked;
+    private int _rttMs;
 
     internal Session(int id, WebSocket socket, string remoteAddress, SessionMessageHandler handler, int outboundCapacity)
     {
@@ -71,6 +78,37 @@ public sealed class Session : IWorldPeer
 
     /// <summary>Build declarada por el cliente en su <c>Hello</c>. Informativa.</summary>
     public string ClientBuild { get; internal set; } = string.Empty;
+
+    /// <summary>
+    /// RTT medido <b>por el servidor</b>, en ms, suavizado. Lo escribe el bucle de lectura al
+    /// recibir un <c>Ping</c> y lo lee el hilo del tick para la compensación de latencia, así que
+    /// va por <see cref="Interlocked"/>: es el único campo de <see cref="Session"/> que cruza
+    /// hilos aparte de la cola de salida.
+    /// </summary>
+    public int RttMs => Volatile.Read(ref _rttMs);
+
+    /// <summary>
+    /// Anota una medida de RTT nueva (FASE-09 §2 D1). <paramref name="sampleMs"/> sale de restar
+    /// el sello que el propio servidor mandó en su último <c>Pong</c>, no de un número calculado
+    /// por el cliente.
+    /// </summary>
+    internal void RecordRtt(long sampleMs)
+    {
+        // Una medida absurda (reloj del cliente roto, sello inventado, primer Ping sin eco) no
+        // debe envenenar la media: se descarta en vez de clamparse, que dejaría la media pegada
+        // al tope. El rebobinado tiene además su propio tope duro en CombatConstants.
+        if (sampleMs < 0 || sampleMs > MaxPlausibleRttMs)
+        {
+            return;
+        }
+
+        var previous = Volatile.Read(ref _rttMs);
+        var smoothed = previous == 0
+            ? (int)sampleMs
+            : (int)((previous * (100 - RttSmoothingPercent) / 100) + (sampleMs * RttSmoothingPercent / 100));
+
+        Volatile.Write(ref _rttMs, smoothed);
+    }
 
     /// <summary>Cuenta autenticada. 0 hasta que <c>Login</c>/<c>Register</c> tienen éxito.</summary>
     public long AccountId { get; internal set; }

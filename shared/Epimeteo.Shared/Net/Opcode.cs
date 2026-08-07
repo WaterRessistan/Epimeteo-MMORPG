@@ -53,6 +53,15 @@ public enum Opcode : ushort
     Attack = 0x0060,
     SkillCast = 0x0061,
 
+    /// <summary>
+    /// Añadido en la Fase 9: el catálogo original reservó <c>LootDrop</c> (S2C) y
+    /// <c>ContainerId.LootBag</c>, pero ningún C2S para coger nada del saco (hueco real,
+    /// FASE-09-combate-pvp.md §2 D9). <c>InvMove</c> no vale: opera entre contenedores del propio
+    /// personaje, y un saco es una entidad del mundo que pueden ver varios. Mismo criterio que
+    /// <see cref="ShopRepair"/> en la Fase 7.
+    /// </summary>
+    LootTake = 0x0062,
+
     ChatSend = 0x0070,
 
     // ── Servidor → cliente ───────────────────────────────────────────────

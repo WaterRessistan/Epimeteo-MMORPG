@@ -14,7 +14,12 @@ public static class ProtocolVersion
     /// <item>1 — Fases 1–3: handshake, autenticación y personajes.</item>
     /// <item>2 — Fase 4: <c>WorldEnter</c> gana <c>MapHash</c> y su <c>MyEntityId</c> pasa a ser
     /// el id de entidad del mundo (era <c>CharacterId</c> provisional).</item>
+    /// <item>3 — Fase 9: <c>C2SPing</c> gana <c>LastServerTimeMs</c>, para que el <b>servidor</b>
+    /// pueda medir el RTT él mismo en vez de creerse el del cliente — la compensación de latencia
+    /// del PvP decide a quién alcanza un golpe, así que no puede depender de un número que manda
+    /// el cliente (FASE-09 §2 D1). Las Fases 6, 7 y 8 no subieron la versión porque sólo añadieron
+    /// opcodes y mensajes nuevos; ésta sí cambia la forma de uno que ya existía.</item>
     /// </list>
     /// </summary>
-    public const int Current = 2;
+    public const int Current = 3;
 }

@@ -1,3 +1,4 @@
+using Epimeteo.Server.Combat;
 using Epimeteo.Server.Inventory;
 using Epimeteo.Shared.Simulation;
 
@@ -84,6 +85,58 @@ public sealed class PlayerEntity : WorldEntity
 
     /// <summary>Strikes de anticheat acumulados (inputs por encima del presupuesto).</summary>
     public int CheatStrikes { get; set; }
+
+    /// <summary>Nivel. No sube en la Fase 9: la curva es la Fase 10.</summary>
+    public int Level { get; set; } = 1;
+
+    /// <summary>Experiencia acumulada.</summary>
+    public long Xp { get; set; }
+
+    /// <summary>
+    /// Verdadero si vida, maná o XP cambiaron desde el último guardado. Se persisten junto a la
+    /// posición y el oro, en el mismo <c>UPDATE</c> (FASE-09 §2 D12).
+    /// </summary>
+    public bool VitalsDirty { get; set; }
+
+    /// <summary>Verdadero mientras el personaje esté muerto, esperando a reaparecer.</summary>
+    public bool IsDead { get; set; }
+
+    /// <summary>
+    /// Instante (<c>ServerClock.NowMs</c>) en el que expira el flag de combate PvP, o <c>0</c> si
+    /// no está en combate (<c>docs/00 §6.2</c>, FASE-09 §2 D11).
+    /// </summary>
+    public long CombatFlagUntilMs { get; set; }
+
+    /// <summary>
+    /// Instante en el que hay que sacar del mundo a un jugador que pidió salir estando en combate.
+    /// <c>null</c> si no hay salida pendiente. Es lo que impide que "me van a matar" se resuelva
+    /// con Alt+F4: la entidad se queda viva y atacable hasta que expire el flag.
+    /// </summary>
+    public long? PendingLeaveAtMs { get; set; }
+
+    /// <summary>Último instante en el que atacó, para el cooldown.</summary>
+    public long LastAttackMs { get; set; }
+
+    /// <summary>Verdadero si el flag de combate sigue vigente en <paramref name="nowMs"/>.</summary>
+    public bool IsInCombat(long nowMs) => CombatFlagUntilMs > nowMs;
+
+    /// <summary>Poder de ataque efectivo, recalculado con cada <c>EquipmentUpdate</c> (Fase 9).</summary>
+    public int AttackPower { get; set; }
+
+    /// <summary>Defensa efectiva, recalculada con cada <c>EquipmentUpdate</c>.</summary>
+    public int Defense { get; set; }
+
+    /// <summary>Destreza efectiva (con equipo), la que entra en la probabilidad de crítico.</summary>
+    public int DexEffective { get; set; }
+
+    /// <summary>Historial de posiciones para la compensación de latencia (FASE-09 §2 D1).</summary>
+    public PositionHistory History { get; } = new();
+
+    /// <inheritdoc />
+    public override bool IsAttackable => !IsDead;
+
+    /// <inheritdoc />
+    public override CombatantStats CombatStats => new(AttackPower, Defense, DexEffective);
 
     /// <summary>Aplica el resultado de un paso de simulación.</summary>
     public void Advance(in MoveState state, long tick)

@@ -25,9 +25,18 @@ Si `protocolVersion` no coincide con la del servidor → `S2C_Kick { reason = Ve
 con la versión esperada, y el cliente muestra "actualiza el juego". `protocolVersion` es un
 `int` que se incrementa a mano cada vez que cambia la forma de un mensaje existente.
 
-**Versión actual: 2** (Fase 4). La 1 fue el handshake y los personajes (Fases 1–3). Cambió porque
-`WorldEnter` ganó `mapHash` y porque `myEntityId` dejó de ser el `characterId` provisional de la
-Fase 3 para pasar a ser el id de entidad real, de un espacio de ids propio del mundo.
+**Versión actual: 3** (Fase 9). Cambió porque `Ping` ganó `lastServerTimeMs`: el eco del último
+`serverTimeMs` que mandó el servidor en su `Pong`. Sin ese eco el servidor no puede medir el RTT
+por sí mismo, y la compensación de latencia del PvP —que decide a quién alcanza un golpe— habría
+tenido que fiarse de un número calculado por el cliente. Ver `docs/fases/FASE-09-combate-pvp.md §2 D1`.
+
+La 2 fue la Fase 4: `WorldEnter` ganó `mapHash` y `myEntityId` dejó de ser el `characterId`
+provisional de la Fase 3 para pasar a ser el id de entidad real. La 1 fue el handshake y los
+personajes (Fases 1–3).
+
+> Las Fases 6, 7 y 8 **no** subieron la versión aunque añadieron mensajes y opcodes
+> (`InvMove`…, `ShopRepair`, `FarmTill`…): añadir no es cambiar la forma de lo que ya existe, y un
+> cliente viejo simplemente no usa lo nuevo.
 
 ## Máquina de estados de sesión
 
@@ -72,6 +81,7 @@ log + cierre inmediato. No hay excepciones a esta regla.
 | 0x0053 | `FarmTill` | InWorld | tileX, tileY |
 | 0x0060 | `Attack` | InWorld | targetEntityId \| dirección, skillKey |
 | 0x0061 | `SkillCast` | InWorld | skillKey, targetEntityId \| tileX,tileY |
+| 0x0062 | `LootTake` | InWorld | lootEntityId, slot — *añadido en la Fase 9: el catálogo original reservó `LootDrop` (S2C) y `ContainerId.LootBag` pero ningún C2S para coger nada del saco. `InvMove` no vale, opera entre contenedores del propio personaje.* |
 | 0x0070 | `ChatSend` | InWorld | canal, texto |
 
 > `precioEsperado` en compra/venta no es opcional: si el precio del servidor no coincide, la

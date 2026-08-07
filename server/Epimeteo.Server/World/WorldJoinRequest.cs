@@ -26,6 +26,8 @@ namespace Epimeteo.Server.World;
 /// <param name="StatDex">Destreza base guardada.</param>
 /// <param name="Items">Contenedores 0–3 cargados de <c>item_instances</c> (FASE-06 §2 D1).</param>
 /// <param name="Gold">Oro guardado (columna <c>gold</c> de <c>characters</c>, Fase 7).</param>
+/// <param name="Level">Nivel guardado. No sube en la Fase 9 (la curva es la Fase 10).</param>
+/// <param name="Xp">Experiencia guardada (Fase 9).</param>
 public sealed record WorldJoinRequest(
     int EntityId,
     long CharacterId,
@@ -44,4 +46,6 @@ public sealed record WorldJoinRequest(
     int StatVit,
     int StatDex,
     IReadOnlyList<ItemStack> Items,
-    long Gold);
+    long Gold,
+    int Level,
+    long Xp);

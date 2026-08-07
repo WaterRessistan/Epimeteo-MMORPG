@@ -1,22 +1,22 @@
 # STATUS — Epimeteo MMORPG
 
-**Última actualización:** 2026-08-06 · **Fase actual:** 8 COMPLETA (granja y cultivos) →
-arranca Fase 9. Desplegado en producción: `wss://epimeteo.waterressistan.duckdns.org/ws`
+**Última actualización:** 2026-08-07 · **Fase actual:** 9 COMPLETA (combate, monstruos y PvP) →
+arranca Fase 10. Desplegado en producción: `wss://epimeteo.waterressistan.duckdns.org/ws`
 
 ## Estado
 
 | Área | Estado |
 |---|---|
 | Diseño y arquitectura | ✅ Cerrado (`docs/00`, `01`, `02`, `03`) |
-| Repositorio git | ✅ Fases 0–7 commiteadas; Fase 8 lista para commitear |
+| Repositorio git | ✅ Fases 0–8 commiteadas; Fase 9 lista para commitear |
 | Solución .NET | ✅ `Epimeteo.sln` (Shared + Server + Server.Tests + Shared.Tests + tools) |
-| Protocolo | ✅ **Versión 2** (sin cambios de forma: los 5 opcodes de granja ya estaban reservados desde la Fase 1, sin ningún hueco real esta vez). Auth, personajes, mundo, inventario/equipo, tienda **y granja** (`FarmTill/Plant/Water/Harvest`, `FarmTileUpdate`) tipados |
-| Servidor | ✅ Lo anterior + **granja autoritativa en memoria** (`FarmSystem`, puro, sin I/O; el crecimiento diario se calcula en el tick, no con un `UPDATE` SQL directo — FASE-08 §2 D1), `farm_tiles` persistidos como instantánea por tile igual que el resto |
-| Cliente Godot | ⚠️ Conecta, handshake, login/registro, `CharacterSelect`, `World.tscn`, overlays de inventario (`I`) y tienda (`E`), y **`NetClient` recibe `FarmTileUpdate`** (sin pantalla de granja dedicada, fuera de alcance de esta fase). Compila sin warnings, pero **no se ha ejecutado nunca**: no hay Godot en este servidor headless |
-| Tests | ✅ **117/117 compartidos + 173/173 servidor en verde** (0 saltados) |
-| Base de datos | ✅ Postgres 16.14; `0001`–`0004` aplicadas (`0004_farm.sql`: `farm_plots`, `farm_tiles`, `farm_calendar`, con la parcela comunitaria de `map.village` ya sembrada) |
-| Contenido (`content/`) | ✅ Lo de la Fase 7 + `content/items/{wheat,hoe,watering_can}.json` (las dos herramientas venden en `general_store`) + **`content/crops/wheat.json`** |
-| Despliegue | ✅ **En producción**: `epimeteo.service` (systemd, usuario dedicado, `Restart=always`, `ProtectSystem=strict`), nginx + TLS propio en `epimeteo.waterressistan.duckdns.org`, backup diario de Postgres por timer. Fase 8 ya desplegada con `deploy/publish.sh` y verificada contra el servicio real |
+| Protocolo | ✅ **Versión 3** (primer cambio desde la Fase 4: `Ping` gana `lastServerTimeMs` para que el servidor mida el RTT él mismo — la compensación de latencia del PvP no puede fiarse de un número del cliente). Todo lo anterior **más combate** (`Attack`, `LootTake`, `CombatEvent`, `EntityDeath`, `LootDrop`, `XpUpdate`, `EntityStats`, `CombatFlagUpdate`) tipado |
+| Servidor | ✅ Lo anterior + **combate autoritativo** (`CombatSystem`/`CombatFormulas` puros, RNG determinista con semilla de servidor), monstruos con IA y correa, compensación de latencia con historial de 500 ms y tope de 200 ms, PvP por región validando atacante **y** víctima, flag de combate de 10 s que difiere el logout, `combat_log` |
+| Cliente Godot | ⚠️ Todo lo anterior + **tecla de ataque (espacio) con objetivo más cercano y HUD de vida/XP/combate**. Compila sin warnings, pero **no se ha ejecutado nunca**: no hay Godot en este servidor headless |
+| Tests | ✅ **137/137 compartidos + 220/220 servidor en verde** (0 saltados) |
+| Base de datos | ✅ Postgres 16.14; `0001`–`0005` aplicadas (`0005_combat.sql`: `combat_log`, sólo muertes PvP). Desde la Fase 9 se persisten también `hp`/`mp`/`xp`/`level`, que existían desde la Fase 2 y no se escribían nunca |
+| Contenido (`content/`) | ✅ Lo de la Fase 8 + **`content/monsters/{slime,wolf}.json`** y los `spawns[]` de `map.village` en `campo_norte` (nunca en la plaza, que es `no_monsters`) |
+| Despliegue | ✅ **En producción**: `epimeteo.service` (systemd, usuario dedicado, `Restart=always`, `ProtectSystem=strict`), nginx + TLS propio en `epimeteo.waterressistan.duckdns.org`, backup diario de Postgres por timer. Fase 9 ya desplegada con `deploy/publish.sh` y verificada contra el servicio real |
 
 ## Entorno
 
@@ -561,24 +561,100 @@ Desplegada con `deploy/publish.sh` antes de verificar.
    `systemctl restart epimeteo` sin pérdida — mismo criterio que posición/inventario/economía en
    las Fases 4/6/7.
 
+## Hecho en la Fase 9 — Combate, monstruos y PvP
+
+Plan completo en `docs/fases/FASE-09-combate-pvp.md` (con una §11 al cierre sobre lo que pasó de
+verdad frente a lo planeado). Los opcodes de combate estaban reservados desde la Fase 1, pero
+**esta fase sí sube la versión del protocolo**: es la primera desde la Fase 4.
+
+- **`ProtocolVersion` 2 → 3.** `C2SPing` gana `LastServerTimeMs`, el eco del último
+  `S2CPong.ServerTimeMs`. Sin él el servidor no puede medir el RTT por sí mismo, y la
+  compensación de latencia —que decide a quién alcanza un golpe— habría tenido que fiarse de un
+  número calculado por el cliente, justo lo que CLAUDE.md §4 prohíbe. Cambiar la forma de un
+  mensaje existente es exactamente el criterio de `docs/01` para subir de versión (las Fases 6–8
+  no la subieron porque sólo añadían).
+- **La compensación mueve la geometría, nunca el permiso** (§2 D2, la decisión de seguridad de la
+  fase, y no estaba escrita en ningún sitio). El rebobinado (500 ms de historial, tope de 200 ms)
+  resuelve **sólo** el alcance; los flags de zona se miran siempre contra la posición autoritativa
+  actual de los dos. Rebobinar también el permiso habría abierto un exploit nuevo justo al cerrar
+  el viejo: matar a alguien que **ya está dentro** de la plaza porque 200 ms atrás no lo estaba.
+- `Shared/Simulation/`: `DeterministicRng` (xorshift64*, con semilla de servidor),
+  `CombatFormulas` (daño, crítico; puro y con daños **exactos** en los tests gracias al RNG
+  determinista) y `LineOfSight` (trazado sobre la colisión: no se pega a través de la muralla).
+- `Server/Combat/`: `CombatSystem` (las siete validaciones de D3, puro), `PositionHistory`
+  (anillo de rebobinado, server-only), `AggroTable` (amenaza por daño, no un objetivo único),
+  `MonsterAi` (FSM `Idle→Patrol→Chase→Attack→Returning` con **correa**, para que nadie arrastre un
+  monstruo hasta la plaza) y `MonsterSpawner` (respawn temporizado, sin persistir nada).
+- **Los monstruos pasan por la misma validación que los jugadores**: la IA sólo *decide*, y
+  `GameWorld` pasa su intención por `CombatSystem`. Un monstruo tampoco pega a través de un muro.
+- `LootBagEntity` con derecho de saqueo (exclusivo del que más daño hizo durante 30 s) y el
+  opcode **`LootTake = 0x0062`**, hueco real del catálogo cerrado: había `LootDrop` (S2C) y
+  `ContainerId.LootBag`, pero ningún C2S para coger nada — `InvMove` no vale, opera entre
+  contenedores del propio personaje. Mismo criterio que `ShopRepair` en la Fase 7.
+- **Flag de combate de 10 s** (`docs/00 §6.2`): salir estando marcado **no** saca del mundo; la
+  entidad se queda viva y atacable hasta que expire. Sin esto, "me van a matar" se resuelve con
+  Alt+F4.
+- **`PositionSave` pasa a `CharacterSave`** y gana vida, maná, XP y nivel: las columnas existen
+  desde la Fase 2, se leían en `CharSelect` y **no las escribía nadie**. Daba igual mientras nada
+  cambiara la vida; con combate, un moribundo se curaría del todo reconectando.
+- `content/monsters/{slime,wolf}.json` y `spawns[]` en `map.village`, siempre en `campo_norte` y
+  nunca en la plaza. Los spawns **no** entran en el hash del mapa: el cliente no los necesita.
+
+### Hallazgos de la verificación E2E
+
+Los tres fueron de la **herramienta o de la expectativa**, no del servidor — que es una señal
+razonable después de tres fases seguidas encontrando huecos reales en el código de producción:
+
+- El bot no limpiaba `KnownEntities` con `EntityDespawn`, así que "pega al monstruo más cercano"
+  acababa apuntando a un cadáver. Lo mismo con los sacos de loot, y ahí el rechazo **correcto**
+  por derechos de saqueo ajenos parecía un fallo del loot.
+- La penalización de XP (5 %) se trunca a 0 con la XP de un monstruo (0,4 → 0). No es un fallo
+  —protege a quien empieza— pero la expectativa del guion sí lo era.
+- Entre `campo_norte` (hasta `y = 48`) y `pueblo` (desde `y = 49`) hay una banda sin región
+  declarada. No se puede atacar ahí, que es el fallo cerrado que se quería (D3), pero conviene
+  saber que existe: comprobar zonas por coordenada en vez de preguntarle al mapa se rompe justo
+  ahí.
+
+### Verificación Fase 9 (esta sesión, contra el servicio de producción real)
+
+Desplegada con `deploy/publish.sh` antes de verificar.
+
+1. ✅ `dotnet build` sin warnings; `dotnet test`: **137/137 compartidos + 220/220 servidor**.
+2. ✅ `dotnet build client/Epimeteo.Client.csproj`: sin warnings. UI no ejercitada a mano.
+3. ✅ `tools/Epimeteo.WorldBot --pvp`: **24/24 comprobaciones en verde** — golpe legal en
+   `campo_norte`, muerte con reaparición en el pueblo, **rechazo atacando desde el borde de la
+   plaza** (`combat.SafeZone`), rechazo con la víctima refugiada y con los dos dentro, monstruos
+   que aparecen solos y mueren dando XP y botín recogible, y **desconectar en combate no saca del
+   mundo**.
+4. ✅ En `psql`: `combat_log` con **una fila por muerte PvP y ninguna por muerte de monstruo**;
+   `characters.hp/xp` sobreviven un `systemctl restart epimeteo`; los monstruos vuelven a aparecer
+   solos tras el reinicio. Tick medio de **9 µs** con 6 monstruos y 0 overruns.
+
+**Límite honesto:** el caso exacto del criterio de aceptación —los dos **en alcance** y separados
+por la frontera— lo fija el test unitario `DesdeElBordeDeLaPlaza_NoSePuedeAtacarAlDeFuera`, que
+afirma primero que están en alcance y luego que se rechaza por zona. El `--pvp` prueba el camino
+entero contra el servidor real pero no fija la distancia, porque el margen de llegada del
+caminante del bot es de 0,3 tiles. Los dos juntos cubren el criterio; ninguno solo lo haría.
+
 ## Siguiente sesión
 
-**Fase 9 — Combate, monstruos y PvP · Opus.** Siguiente en `docs/03-roadmap-fases.md` — **cambio
-de modelo obligatorio** (CLAUDE.md §6: netcode/PvP/seguridad son de las fases reservadas a Opus,
-como las Fases 0, 1 y 4).
+**Fase 10 — Progresión · Sonnet.** Siguiente en `docs/03-roadmap-fases.md` — **cambio de modelo**
+(CLAUDE.md §6: implementación sobre diseño cerrado). Le toca la curva de XP y subida de nivel (la
+Fase 9 mueve la XP pero nadie sube), los puntos de stat, y 3–4 habilidades por clase con maná y
+cooldown — para las que `SkillCast` (`0x0061`) sigue reservado sin tipar. También le tocará
+reajustar los números provisionales de combate de esta fase (ataque = fuerza efectiva, defensa =
+vitalidad/2, daño = ataque − defensa/2 ±15 %).
 
 **Pendiente aparte, en cuanto haya una máquina con entorno gráfico:** abrir `client/project.godot`
-en Godot 4.5 y comprobar el punto 7 del criterio de la Fase 4 (dos clientes viéndose mover), el
-overlay de inventario de la Fase 6 (drag & drop de verdad, tecla `I`) y el overlay de tienda de
-la Fase 7 (tecla `E`, comprar/vender/reparar de verdad con el ratón) — la granja de esta fase no
-tiene overlay que probar todavía (§7 del plan). El HUD de mundo da los números de predicción sin
-herramientas; ni el inventario ni la tienda tienen ese instrumento — hay que mirarlos. Ahora que
-el juego está en producción, el cliente puede apuntar a
-`wss://epimeteo.waterressistan.duckdns.org/ws` en vez de `127.0.0.1`.
+en Godot 4.5 y comprobar a mano lo que este servidor headless no puede: dos clientes viéndose
+mover (Fase 4), el drag & drop del inventario (`I`, Fase 6), la tienda (`E`, Fase 7) y ahora el
+combate (espacio, con el HUD de vida/XP y los números de daño en el log). El cliente puede apuntar
+a `wss://epimeteo.waterressistan.duckdns.org/ws` en vez de `127.0.0.1`.
 
 **Pendiente de decidir, no técnico:** los datos de prueba acumulados en la BD (cuentas `Bot*`/
-`smoke_*`/`farm_*` de `SmokeClient`/`WorldBot` a lo largo de las Fases 1–8) — si el juego se va a
-anunciar de verdad, alguien tiene que decidir si se limpian antes. Esta sesión no ha borrado nada.
+`smoke_*`/`farm_*`/`pvp_*` de `SmokeClient`/`WorldBot` a lo largo de las Fases 1–9) — si el juego
+se va a anunciar de verdad, alguien tiene que decidir si se limpian antes. Esta sesión no ha
+borrado nada.
 
 **Verificación real que sólo puede hacer un humano:** conectar desde un móvil en datos 4G (no
 en la red del servidor) a `wss://epimeteo.waterressistan.duckdns.org/ws` con el cliente Godot, en
@@ -629,4 +705,8 @@ dotnet run --project tools/Epimeteo.WorldBot -- --farm-plant
 # UPDATE farm_calendar SET last_day_index = last_day_index - 6;
 # sudo systemctl restart epimeteo
 dotnet run --project tools/Epimeteo.WorldBot -- --farm-harvest <username>
+
+# Combate y PvP (Fase 9): dos bots de verdad, 24 comprobaciones. Tarda ~4 min.
+dotnet run --project tools/Epimeteo.WorldBot -- --pvp
+dotnet run --project tools/Epimeteo.WorldBot -- --pvp --lag-ms 150   # con latencia real de por medio
 ```

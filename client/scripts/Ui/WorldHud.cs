@@ -13,8 +13,10 @@ public partial class WorldHud : Control
 {
     private static readonly Color Safe = new(0.65f, 0.85f, 0.65f);
     private static readonly Color Hostile = new(1f, 0.45f, 0.4f);
+    private static readonly Color Normal = new(0.9f, 0.9f, 0.92f);
 
     private Label _position = null!;
+    private Label _combat = null!;
     private Label _network = null!;
     private Label _region = null!;
     private Label _prediction = null!;
@@ -26,6 +28,7 @@ public partial class WorldHud : Control
         _network = GetNode<Label>("Panel/Lines/Network");
         _region = GetNode<Label>("Panel/Lines/Region");
         _prediction = GetNode<Label>("Panel/Lines/Prediction");
+        _combat = GetNode<Label>("Panel/Lines/Combat");
     }
 
     /// <summary>Posición predicha del jugador y entidades visibles.</summary>
@@ -55,6 +58,16 @@ public partial class WorldHud : Control
     }
 
     /// <summary>Correcciones acumuladas y peor error. Con 0 ms de latencia tienen que quedarse en cero.</summary>
+    /// <summary>
+    /// Vida propia, objetivo y flag de combate (Fase 9). Sin arte: es el mismo criterio que el
+    /// resto del HUD — números, que es lo que hace falta para verificar.
+    /// </summary>
+    public void SetCombat(int hp, int hpMax, long xp, string targetLabel, bool inCombat)
+    {
+        _combat.Text = $"HP {hp}/{hpMax}  ·  XP {xp}  ·  {targetLabel}";
+        _combat.AddThemeColorOverride("font_color", inCombat ? Hostile : Normal);
+    }
+
     public void SetPrediction(int corrections, float maxErrorTiles, int pendingInputs) =>
         _prediction.Text = $"corr {corrections}  ·  err máx {maxErrorTiles:F3} t  ·  pend {pendingInputs}";
 

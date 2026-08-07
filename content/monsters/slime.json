@@ -1,0 +1,19 @@
+{
+  "key": "monster.slime",
+  "displayName": "Limo",
+  "level": 1,
+  "hpMax": 30,
+  "attack": 6,
+  "defense": 2,
+  "dex": 2,
+  "moveSpeedTiles": 2.0,
+  "attackRangeTiles": 1.2,
+  "attackCooldownMs": 1400,
+  "aggroRadiusTiles": 5.0,
+  "leashRadiusTiles": 12.0,
+  "xpReward": 8,
+  "loot": [
+    { "defKey": "item.iron_ore", "chance": 0.5, "min": 1, "max": 2 },
+    { "defKey": "item.health_potion", "chance": 0.2, "min": 1, "max": 1 }
+  ]
+}

@@ -16,6 +16,9 @@ internal sealed class FakeWorldPeer : IWorldPeer
 
     public int Id { get; }
 
+    /// <summary>RTT simulado, para probar el rebobinado de la compensación de latencia (Fase 9).</summary>
+    public int RttMs { get; set; }
+
     public bool Kicked { get; private set; }
 
     public KickReason KickedReason { get; private set; }

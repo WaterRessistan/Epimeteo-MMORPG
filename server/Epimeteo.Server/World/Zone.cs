@@ -1,3 +1,4 @@
+using Epimeteo.Server.Combat;
 using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Net.Messages;
@@ -19,6 +20,9 @@ public sealed class Zone
     private readonly Dictionary<int, WorldEntity> _entities = [];
     private readonly Dictionary<int, PlayerEntity> _playersBySession = [];
     private readonly List<PlayerEntity> _players = [];
+    private readonly List<MonsterEntity> _monsters = [];
+    private readonly List<LootBagEntity> _lootBags = [];
+    private readonly List<PendingMonsterAttack> _pendingMonsterAttacks = [];
     private readonly AoiGrid _grid;
     private readonly CellGrid _cells;
     private readonly AoiSystem _aoi;
@@ -26,9 +30,13 @@ public sealed class Zone
     private readonly ILogger _log = Log.ForContext<Zone>();
     private bool _cellsDirty;
 
-    public Zone(GameMap map, IReadOnlyList<NpcEntity>? npcs = null)
+    public Zone(GameMap map, IReadOnlyList<NpcEntity>? npcs = null, ulong rngSeed = 0)
     {
         Map = map;
+
+        // Una secuencia por zona, con semilla de servidor (FASE-09 §2 D4). La semilla no sale de
+        // aquí: el cliente no predice daño ni tiradas de loot.
+        Rng = new DeterministicRng(rngSeed == 0 ? (ulong)DateTime.UtcNow.Ticks : rngSeed);
         _grid = new AoiGrid(map.Width, map.Height);
         _cells = new CellGrid(_grid.CellCount);
         _aoi = new AoiSystem(_grid, _cells, _entities);
@@ -55,11 +63,79 @@ public sealed class Zone
     /// <summary>Mapa que simula esta zona.</summary>
     public GameMap Map { get; }
 
+    /// <summary>Generador de la zona: daño, tiradas de loot y patrullas (FASE-09 §2 D4).</summary>
+    public DeterministicRng Rng { get; }
+
     /// <summary>Jugadores dentro de la zona.</summary>
     public IReadOnlyList<PlayerEntity> Players => _players;
 
     /// <summary>Entidades vivas, jugadores incluidos.</summary>
     public IReadOnlyDictionary<int, WorldEntity> Entities => _entities;
+
+    /// <summary>Monstruos de la zona (Fase 9).</summary>
+    public IReadOnlyList<MonsterEntity> Monsters => _monsters;
+
+    /// <summary>Sacos de loot en el suelo (Fase 9).</summary>
+    public IReadOnlyList<LootBagEntity> LootBags => _lootBags;
+
+    /// <summary>
+    /// Ataques que los monstruos quieren lanzar este tick. Los resuelve <c>GameWorld</c>, que es
+    /// quien tiene el RNG y los catálogos — la IA sólo decide, no pega (FASE-09 §2 D8).
+    /// </summary>
+    public IReadOnlyList<PendingMonsterAttack> PendingMonsterAttacks => _pendingMonsterAttacks;
+
+    /// <summary>Mete una entidad que no es un jugador (monstruo, saco de loot) en el mundo.</summary>
+    public void AddEntity(WorldEntity entity)
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+
+        entity.Cell = _grid.CellOf(entity.State.Pos);
+        _entities[entity.Id] = entity;
+        _cells.Add(entity.Id, entity.Cell);
+        _cellsDirty = true;
+
+        switch (entity)
+        {
+            case MonsterEntity monster:
+                _monsters.Add(monster);
+                break;
+
+            case LootBagEntity bag:
+                _lootBags.Add(bag);
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    /// <summary>Saca del mundo una entidad que no es un jugador y avisa a quien la estuviera viendo.</summary>
+    public void RemoveEntity(int entityId, DespawnReason reason)
+    {
+        if (!_entities.Remove(entityId, out var entity))
+        {
+            return;
+        }
+
+        _cells.Remove(entityId, entity.Cell);
+        _cellsDirty = true;
+
+        switch (entity)
+        {
+            case MonsterEntity monster:
+                _monsters.Remove(monster);
+                break;
+
+            case LootBagEntity bag:
+                _lootBags.Remove(bag);
+                break;
+
+            default:
+                break;
+        }
+
+        AoiSystem.NotifyRemoval(entityId, reason, _players);
+    }
 
     /// <summary>Busca al jugador de una sesión.</summary>
     public PlayerEntity? FindBySession(int sessionId) =>
@@ -104,6 +180,8 @@ public sealed class Zone
             Vit = request.StatVit,
             Dex = request.StatDex,
             Gold = request.Gold,
+            Level = request.Level,
+            Xp = request.Xp,
         };
 
         player.Cell = _grid.CellOf(position);
@@ -122,6 +200,31 @@ public sealed class Zone
             player.Id, player.Name, Map.Key, position.X, position.Y, _players.Count);
 
         return player;
+    }
+
+    /// <summary>
+    /// Mueve a un jugador de golpe a otro punto de la misma zona (reaparición tras morir). Hay que
+    /// pasar por aquí y no tocar <c>State</c> a pelo: cambia de celda de AOI, y el historial de
+    /// posiciones tiene que olvidar el salto — si no, un ataque rebobinado podría alcanzarle en el
+    /// sitio donde murió.
+    /// </summary>
+    public void Teleport(PlayerEntity player, Vec2 destination, long nowMs)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+
+        player.SetState(MoveState.AtRest(destination, player.State.Facing), player.LastChangedTick + 1);
+
+        var cell = _grid.CellOf(destination);
+        if (cell != player.Cell)
+        {
+            _cells.Move(player.Id, player.Cell, cell);
+            player.Cell = cell;
+            _cellsDirty = true;
+        }
+
+        player.History.Reset(nowMs, destination);
+        _aoi.Refresh(player);
+        SendZoneFlags(player);
     }
 
     /// <summary>Saca a un jugador del mundo y avisa a quien lo estuviera viendo.</summary>
@@ -191,10 +294,18 @@ public sealed class Zone
     /// <summary>Un tick completo de la zona, en el orden de <c>docs/00 §4</c>.</summary>
     public void Tick(long tick, long nowMs)
     {
+        _pendingMonsterAttacks.Clear();
+
         foreach (var player in _players)
         {
             Simulate(player, tick);
+
+            // El historial se anota después de simular, con la posición ya autoritativa de este
+            // tick: es contra esto contra lo que se rebobina un ataque (FASE-09 §2 D1).
+            player.History.Record(nowMs, player.State.Pos);
         }
+
+        TickMonsters(tick, nowMs);
 
         if (_cellsDirty)
         {
@@ -212,6 +323,24 @@ public sealed class Zone
             foreach (var player in _players)
             {
                 _snapshots.Send(player, tick);
+            }
+        }
+    }
+
+    /// <summary>
+    /// La IA de todos los monstruos de la zona. Sólo decide y mueve: los ataques que quiera lanzar
+    /// quedan en <see cref="PendingMonsterAttacks"/> para que <c>GameWorld</c> los pase por
+    /// <c>CombatSystem</c>, exactamente igual que el ataque de un jugador.
+    /// </summary>
+    private void TickMonsters(long tick, long nowMs)
+    {
+        foreach (var monster in _monsters)
+        {
+            var action = MonsterAi.Tick(monster, _players, Map, Rng, tick, nowMs);
+
+            if (action.AttackTargetId is { } targetId)
+            {
+                _pendingMonsterAttacks.Add(new PendingMonsterAttack(monster, targetId));
             }
         }
     }

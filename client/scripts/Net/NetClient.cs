@@ -32,6 +32,12 @@ public partial class NetClient : Node
     private double _pingTimer;
     private bool _connectRequested;
 
+    /// <summary>
+    /// Último <c>ServerTimeMs</c> recibido en un <c>Pong</c>. Se devuelve en el siguiente
+    /// <c>Ping</c> para que el <b>servidor</b> pueda medir el RTT él mismo (FASE-09 §2 D1).
+    /// </summary>
+    private long _lastServerTimeMs;
+
     /// <summary>Se dispara cuando cambia el estado de la conexión.</summary>
     public event Action<ConnectionStatus>? StatusChanged;
 
@@ -92,6 +98,24 @@ public partial class NetClient : Node
     /// <summary>Se dispara al entrar al mundo, tras cada acción de granja y en el barrido diario (Fase 8).</summary>
     public event Action<S2CFarmTileUpdate>? FarmTileUpdateReceived;
 
+    /// <summary>Se dispara con cada golpe resuelto por el servidor (Fase 9).</summary>
+    public event Action<S2CCombatEvent>? CombatEventReceived;
+
+    /// <summary>Se dispara cuando cambia la vida o el maná de una entidad visible.</summary>
+    public event Action<S2CEntityStats>? EntityStatsReceived;
+
+    /// <summary>Se dispara cuando muere una entidad visible.</summary>
+    public event Action<S2CEntityDeath>? EntityDeathReceived;
+
+    /// <summary>Se dispara al caer un saco de loot, y cada vez que cambia su contenido.</summary>
+    public event Action<S2CLootDrop>? LootDropReceived;
+
+    /// <summary>Se dispara al ganar o perder experiencia.</summary>
+    public event Action<S2CXpUpdate>? XpUpdateReceived;
+
+    /// <summary>Se dispara al entrar o salir de combate PvP (bloquea el logout limpio).</summary>
+    public event Action<S2CCombatFlagUpdate>? CombatFlagUpdateReceived;
+
     /// <summary>Estado actual de la conexión.</summary>
     public ConnectionStatus Status { get; private set; } = ConnectionStatus.Disconnected;
 
@@ -132,6 +156,15 @@ public partial class NetClient : Node
     /// <c>CurrencyUpdate</c> (Fase 7) — nunca se calcula en el cliente, siempre lo dice el servidor.
     /// </summary>
     public long Gold { get; private set; }
+
+    /// <summary>Experiencia actual, según el último <c>XpUpdate</c> (Fase 9).</summary>
+    public long Xp { get; private set; }
+
+    /// <summary>
+    /// Si está en combate PvP. Sólo para pintar el aviso: quien impide de verdad el logout limpio
+    /// es el servidor (FASE-09 §2 D11).
+    /// </summary>
+    public bool InCombat { get; private set; }
 
     /// <inheritdoc />
     public override void _Ready()
@@ -277,7 +310,7 @@ public partial class NetClient : Node
         }
 
         _pingTimer = PingIntervalSec;
-        Send(Opcode.Ping, new C2SPing { ClientTimeMs = ServerClock.NowMs });
+        Send(Opcode.Ping, new C2SPing { ClientTimeMs = ServerClock.NowMs, LastServerTimeMs = _lastServerTimeMs });
     }
 
     /// <summary>
@@ -355,6 +388,17 @@ public partial class NetClient : Node
     /// <summary>Cosechar un tile listo.</summary>
     public void SendFarmHarvest(int tileX, int tileY) =>
         Send(Opcode.FarmHarvest, new C2SFarmHarvest { TileX = tileX, TileY = tileY });
+
+    /// <summary>
+    /// Atacar a una entidad (Fase 9). Sólo viaja a quién: el daño, el alcance y si la zona lo
+    /// permite los decide el servidor (CLAUDE.md §4).
+    /// </summary>
+    public void SendAttack(int targetEntityId) =>
+        Send(Opcode.Attack, new C2SAttack { TargetEntityId = targetEntityId });
+
+    /// <summary>Coger un hueco de un saco de loot.</summary>
+    public void SendLootTake(int lootEntityId, byte slot) =>
+        Send(Opcode.LootTake, new C2SLootTake { LootEntityId = lootEntityId, Slot = slot });
 
     private void PumpIncoming()
     {
@@ -460,6 +504,7 @@ public partial class NetClient : Node
                     _state = SessionState.Loading;
                     LastWorldEnter = worldEnter;
                     Gold = worldEnter.Stats.Gold;
+                    Xp = worldEnter.Stats.Xp;
                     WorldEnterReceived?.Invoke(worldEnter);
                 }
 
@@ -562,6 +607,56 @@ public partial class NetClient : Node
 
                 break;
 
+            case Opcode.CombatEvent:
+                if (FrameCodec.TryDecodePayload<S2CCombatEvent>(frame, out var combatEvent) && combatEvent is not null)
+                {
+                    CombatEventReceived?.Invoke(combatEvent);
+                }
+
+                break;
+
+            case Opcode.EntityStats:
+                if (FrameCodec.TryDecodePayload<S2CEntityStats>(frame, out var entityStats) && entityStats is not null)
+                {
+                    EntityStatsReceived?.Invoke(entityStats);
+                }
+
+                break;
+
+            case Opcode.EntityDeath:
+                if (FrameCodec.TryDecodePayload<S2CEntityDeath>(frame, out var death) && death is not null)
+                {
+                    EntityDeathReceived?.Invoke(death);
+                }
+
+                break;
+
+            case Opcode.LootDrop:
+                if (FrameCodec.TryDecodePayload<S2CLootDrop>(frame, out var loot) && loot is not null)
+                {
+                    LootDropReceived?.Invoke(loot);
+                }
+
+                break;
+
+            case Opcode.XpUpdate:
+                if (FrameCodec.TryDecodePayload<S2CXpUpdate>(frame, out var xp) && xp is not null)
+                {
+                    Xp = xp.Xp;
+                    XpUpdateReceived?.Invoke(xp);
+                }
+
+                break;
+
+            case Opcode.CombatFlagUpdate:
+                if (FrameCodec.TryDecodePayload<S2CCombatFlagUpdate>(frame, out var flag) && flag is not null)
+                {
+                    InCombat = flag.InCombat;
+                    CombatFlagUpdateReceived?.Invoke(flag);
+                }
+
+                break;
+
             case Opcode.Kick:
                 if (FrameCodec.TryDecodePayload<S2CKick>(frame, out var kick) && kick is not null)
                 {
@@ -583,6 +678,7 @@ public partial class NetClient : Node
     {
         // Los dos sellos salen del mismo reloj monotónico local: el RTT no depende de que los
         // relojes de cliente y servidor estén sincronizados.
+        _lastServerTimeMs = pong.ServerTimeMs;
         LastRttMs = Math.Max(0, ServerClock.NowMs - pong.ClientTimeMs);
         AverageRttMs = AverageRttMs < 0
             ? LastRttMs

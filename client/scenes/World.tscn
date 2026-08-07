@@ -34,7 +34,7 @@ anchors_preset = 0
 offset_left = 4.0
 offset_top = 4.0
 offset_right = 210.0
-offset_bottom = 54.0
+offset_bottom = 64.0
 mouse_filter = 2
 
 [node name="Lines" type="VBoxContainer" parent="Hud/WorldHud/Panel"]
@@ -61,6 +61,11 @@ text = "sin región"
 layout_mode = 2
 theme_override_font_sizes/font_size = 8
 text = "corr 0 · err máx 0.000 t · pend 0"
+
+[node name="Combat" type="Label" parent="Hud/WorldHud/Panel/Lines"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 8
+text = "HP —"
 
 [node name="InventoryScreen" type="CanvasLayer" parent="."]
 script = ExtResource("5_inventory")

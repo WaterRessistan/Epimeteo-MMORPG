@@ -75,6 +75,7 @@ public static class OpcodeTable
 
             new(Opcode.Attack, OpcodeFamily.Combat, SessionState.InWorld),
             new(Opcode.SkillCast, OpcodeFamily.Combat, SessionState.InWorld),
+            new(Opcode.LootTake, OpcodeFamily.Combat, SessionState.InWorld),
 
             new(Opcode.ChatSend, OpcodeFamily.Chat, SessionState.InWorld),
 

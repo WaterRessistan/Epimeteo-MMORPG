@@ -16,6 +16,13 @@ public interface IWorldPeer
     /// <summary>Id de la sesión, el mismo que llega en <see cref="WorldMessage.SessionId"/>.</summary>
     int Id { get; }
 
+    /// <summary>
+    /// RTT medido por el servidor, en ms (FASE-09 §2 D1). Lo usa la compensación de latencia para
+    /// decidir cuánto rebobinar, así que es medido, no declarado por el cliente. 0 mientras no
+    /// haya llegado ningún <c>Ping</c> con eco.
+    /// </summary>
+    int RttMs { get; }
+
     /// <summary>Encola un mensaje hacia el cliente.</summary>
     void Send<T>(Opcode opcode, T payload);
 

@@ -52,7 +52,9 @@ internal static class TestWorld
         StatVit: 6,
         StatDex: 4,
         Items: [],
-        Gold: gold);
+        Gold: gold,
+        Level: 1,
+        Xp: 0);
 
     /// <summary>Input de movimiento en una dirección.</summary>
     public static MoveInput Input(uint seq, int dirX, int dirY) =>

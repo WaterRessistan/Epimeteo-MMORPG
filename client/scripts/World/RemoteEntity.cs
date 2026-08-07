@@ -48,11 +48,14 @@ public sealed class RemoteEntity
     /// <summary>Índice de paleta, lo único que hay de "aspecto" hasta que haya arte (CLAUDE.md §5).</summary>
     public byte PaletteIndex { get; }
 
-    /// <summary>Vida actual según el último spawn. La Fase 9 la mantendrá al día.</summary>
-    public int Hp { get; }
+    /// <summary>Vida actual. La mantiene al día <c>EntityStats</c> desde la Fase 9.</summary>
+    public int Hp { get; set; }
 
     /// <summary>Vida máxima.</summary>
-    public int HpMax { get; }
+    public int HpMax { get; set; }
+
+    /// <summary>Verdadero mientras le quede vida.</summary>
+    public bool IsAlive => Hp > 0;
 
     /// <summary>Pose que toca dibujar ahora mismo, ya interpolada.</summary>
     public MoveState State => _interpolator.Current;

@@ -34,6 +34,13 @@ internal sealed class Bot : IAsyncDisposable
     private uint _seq;
     private bool _closed;
 
+    /// <summary>Eco para que el servidor mida el RTT (FASE-09 §2 D1).</summary>
+    private long _lastServerTimeMs;
+    private long _lastPingMs;
+
+    /// <summary>Cadencia de <c>Ping</c>, como la del cliente de verdad (docs/01 § Ritmos).</summary>
+    private const int PingIntervalMs = 1000;
+
     public Bot(string url, string username, string characterName, GameMap map, int lagMs)
     {
         Url = url;
@@ -114,6 +121,24 @@ internal sealed class Bot : IAsyncDisposable
     /// <summary>Último estado conocido de cada tile de granja, por coordenada (FASE-08 §9).</summary>
     public Dictionary<(int X, int Y), FarmTileInfo> LastFarmTiles { get; } = [];
 
+    /// <summary>Vida propia y de las entidades vistas, según los <c>EntityStats</c> (Fase 9).</summary>
+    public Dictionary<int, (int Hp, int HpMax)> EntityHp { get; } = [];
+
+    /// <summary>Golpes vistos en la fase actual.</summary>
+    public List<S2CCombatEvent> CombatEvents { get; } = [];
+
+    /// <summary>Muertes vistas en la fase actual.</summary>
+    public List<S2CEntityDeath> Deaths { get; } = [];
+
+    /// <summary>Sacos de loot vistos, por id de entidad.</summary>
+    public Dictionary<int, S2CLootDrop> LootBags { get; } = [];
+
+    /// <summary>Experiencia actual, según el último <c>XpUpdate</c>.</summary>
+    public long Xp { get; private set; }
+
+    /// <summary>Si está en combate PvP, según el último <c>CombatFlagUpdate</c>.</summary>
+    public bool InCombat { get; private set; }
+
     /// <summary><c>SystemMessage</c> recibidos en la fase actual — así se ven los fallos de granja (<c>farm.{ResultCode}</c>, sin opcode de resultado propio).</summary>
     public List<S2CSystemMessage> SystemMessages { get; } = [];
 
@@ -178,6 +203,8 @@ internal sealed class Bot : IAsyncDisposable
         WorldEnter = enter;
         MyEntityId = enter.MyEntityId;
         Gold = enter.Stats.Gold;
+        Xp = enter.Stats.Xp;
+        EntityHp[enter.MyEntityId] = (enter.Stats.Hp, enter.Stats.Hp);
         ServerPos = new Vec2(enter.SpawnX, enter.SpawnY);
         Prediction = new ClientPrediction(_map.Collision, MoveState.AtRest(ServerPos, enter.Facing));
 
@@ -237,7 +264,11 @@ internal sealed class Bot : IAsyncDisposable
         for (var esperado = 0; esperado < totalMs; esperado += PingEveryMs)
         {
             await Task.Delay(Math.Min(PingEveryMs, totalMs - esperado));
-            await SendNowAsync(Opcode.Ping, new C2SPing { ClientTimeMs = Environment.TickCount64 });
+            await SendNowAsync(Opcode.Ping, new C2SPing
+            {
+                ClientTimeMs = Environment.TickCount64,
+                LastServerTimeMs = _lastServerTimeMs,
+            });
         }
     }
 
@@ -277,6 +308,21 @@ internal sealed class Bot : IAsyncDisposable
             Handle(frame);
         }
 
+        // Ping a 1 Hz como cualquier cliente de verdad (docs/01 § Ritmos). Aparte de renovar el
+        // timeout, es lo que le permite al servidor medir el RTT del bot y aplicar la
+        // compensación de latencia con un número real (FASE-09 §2 D1).
+        if (nowMs - _lastPingMs >= PingIntervalMs)
+        {
+            _lastPingMs = nowMs;
+            _outLag.Push(
+                FrameCodec.Encode(Opcode.Ping, new C2SPing
+                {
+                    ClientTimeMs = nowMs,
+                    LastServerTimeMs = _lastServerTimeMs,
+                }),
+                nowMs);
+        }
+
         for (var i = 0; i < InputsPerTick; i++)
         {
             var (dirX, dirY) = Direction(nowMs);
@@ -313,6 +359,12 @@ internal sealed class Bot : IAsyncDisposable
         ShopResults.Clear();
         LastInventoryChanges.Clear();
         SystemMessages.Clear();
+        CombatEvents.Clear();
+        Deaths.Clear();
+
+        // Los sacos también: si no, quien busque "el saco que acabo de tirar" puede quedarse con
+        // uno de otra fase, que además puede ser de otro jugador y tener sus derechos de saqueo.
+        LootBags.Clear();
     }
 
     /// <summary>Manda un mensaje de inmediato, sin pasar por el simulador de latencia (acciones discretas, no movimiento).</summary>
@@ -362,6 +414,15 @@ internal sealed class Bot : IAsyncDisposable
 
             case Opcode.EntityDespawn when FrameCodec.TryDecodePayload<S2CEntityDespawn>(frame, out var despawn) && despawn is not null:
                 Despawned.AddRange(despawn.Entities.Select(entity => (entity.Id, entity.Reason)));
+
+                // Sin esto, KnownEntities acumula monstruos ya muertos y quien busque "un monstruo
+                // al que pegar" acaba eligiendo un cadáver que el servidor ya no conoce.
+                foreach (var entity in despawn.Entities)
+                {
+                    KnownEntities.Remove(entity.Id);
+                    LootBags.Remove(entity.Id);
+                }
+
                 break;
 
             case Opcode.ZoneFlagsUpdate when FrameCodec.TryDecodePayload<S2CZoneFlagsUpdate>(frame, out var zone) && zone is not null:
@@ -370,6 +431,35 @@ internal sealed class Bot : IAsyncDisposable
 
             case Opcode.Kick when FrameCodec.TryDecodePayload<S2CKick>(frame, out var kick) && kick is not null:
                 Kicked = kick.Reason;
+                break;
+
+            case Opcode.EntityStats when FrameCodec.TryDecodePayload<S2CEntityStats>(frame, out var stats) && stats is not null:
+                EntityHp[stats.Id] = (stats.Hp, stats.HpMax);
+                break;
+
+            case Opcode.CombatEvent when FrameCodec.TryDecodePayload<S2CCombatEvent>(frame, out var evt) && evt is not null:
+                CombatEvents.Add(evt);
+                break;
+
+            case Opcode.EntityDeath when FrameCodec.TryDecodePayload<S2CEntityDeath>(frame, out var death) && death is not null:
+                Deaths.Add(death);
+                break;
+
+            case Opcode.LootDrop when FrameCodec.TryDecodePayload<S2CLootDrop>(frame, out var loot) && loot is not null:
+                LootBags[loot.EntityId] = loot;
+                break;
+
+            case Opcode.XpUpdate when FrameCodec.TryDecodePayload<S2CXpUpdate>(frame, out var xp) && xp is not null:
+                Xp = xp.Xp;
+                break;
+
+            case Opcode.CombatFlagUpdate when FrameCodec.TryDecodePayload<S2CCombatFlagUpdate>(frame, out var flag) && flag is not null:
+                InCombat = flag.InCombat;
+                break;
+
+            case Opcode.Pong when FrameCodec.TryDecodePayload<S2CPong>(frame, out var pong) && pong is not null:
+                // Se devuelve en el siguiente Ping para que el servidor mida el RTT (FASE-09 §2 D1).
+                _lastServerTimeMs = pong.ServerTimeMs;
                 break;
 
             case Opcode.FarmTileUpdate when FrameCodec.TryDecodePayload<S2CFarmTileUpdate>(frame, out var farm) && farm is not null:

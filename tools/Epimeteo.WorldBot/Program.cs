@@ -59,6 +59,13 @@ internal static class Program
             return await FarmHarvestPhase(url, map, username);
         }
 
+        // Flujo de PvP de la Fase 9 (FASE-09-combate-pvp.md §9): dos bots de verdad pegándose,
+        // con el criterio de aceptación de docs/03 (no se puede atacar desde el borde de la plaza).
+        if (args.Contains("--pvp"))
+        {
+            return await PvpPhase(url, map, lagMs);
+        }
+
         var run = Guid.NewGuid().ToString("N")[..6];
 
         Console.WriteLine($"Servidor : {url}");
@@ -450,6 +457,258 @@ internal static class Program
         }
 
         return null;
+    }
+
+
+    /// <summary>
+    /// Verificación de PvP y combate (FASE-09-combate-pvp.md §9). Dos bots de verdad: uno pega y
+    /// el otro encaja, en el campo y en la plaza, y con el caso del borde que pide el criterio de
+    /// aceptación de <c>docs/03</c>.
+    /// <code>dotnet run --project tools/Epimeteo.WorldBot -- --pvp [url] [--lag-ms 150]</code>
+    /// </summary>
+    private static async Task<int> PvpPhase(string url, GameMap map, int lagMs)
+    {
+        // La muralla del pueblo (y = 48) tiene una sola puerta, en x = 48: cualquier ruta entre la
+        // plaza y campo_norte pasa por ahí, así que se va por waypoints y no en línea recta.
+        var puertaSur = new Vec2(48.5f, 50.5f);
+        var puertaNorte = new Vec2(48.5f, 46.5f);
+        var campoA = new Vec2(47.6f, 43.5f);
+        var campoB = new Vec2(48.4f, 43.5f);
+        var plaza = new Vec2(48.5f, 60.5f);
+
+        var run = Guid.NewGuid().ToString("N")[..8];
+        var a = new Bot(url, $"pvp_{run}_a", $"PvpA_{run}", map, lagMs);
+        var b = new Bot(url, $"pvp_{run}_b", $"PvpB_{run}", map, lagMs);
+        var flota = new List<Bot> { a, b };
+
+        try
+        {
+            Console.WriteLine($"· PvP con {lagMs} ms de latencia simulada por sentido");
+            await a.ConnectAsync(register: true);
+            await b.ConnectAsync(register: true);
+            await Run(flota, 500);
+
+            // ── 1. Los dos en zona PvP: pegar funciona ────────────────────
+            await Rutas(flota, (a, [puertaSur, puertaNorte, campoA]), (b, [puertaSur, puertaNorte, campoB]));
+            Check($"Los dos cruzaron a campo_norte (A en {a.ServerPos.Y:F1}, B en {b.ServerPos.Y:F1})",
+                a.ServerPos.Y < 48 && b.ServerPos.Y < 48);
+            Check("El servidor dice que la región de B es hostil",
+                b.ZoneUpdates.Count > 0 && b.ZoneUpdates[^1].Flags.HasFlag(ZoneFlags.Pvp));
+
+            var vidaAntes = b.EntityHp.GetValueOrDefault(b.MyEntityId).Hp;
+            a.ResetPhase();
+            b.ResetPhase();
+            a.SendNow(Opcode.Attack, new C2SAttack { TargetEntityId = b.MyEntityId });
+            await Run(flota, 800);
+
+            var vidaDespues = b.EntityHp.GetValueOrDefault(b.MyEntityId).Hp;
+            Check($"En zona PvP el golpe entra (vida de B: {vidaAntes} → {vidaDespues})", vidaDespues < vidaAntes);
+            Check("El atacante recibe el CombatEvent", a.CombatEvents.Count > 0);
+            Check("Los dos quedan marcados en combate", a.InCombat && b.InCombat);
+
+            // ── 2. Matarlo de verdad: respawn, penalización y combat_log ──
+            // B tiene que tener algo de XP para que la penalización sea observable, así que se le
+            // deja matar un monstruo antes (5 % de 0 seguiría siendo 0).
+            var monstruoParaB = b.KnownEntities.Values.FirstOrDefault(e => e.Type == EntityType.Monster);
+            if (monstruoParaB is not null)
+            {
+                await Rutas(flota, 25_000, (b, [new Vec2(monstruoParaB.X, monstruoParaB.Y)]), (a, []));
+                b.ResetPhase();
+
+                for (var golpe = 0; golpe < 40 && !b.Deaths.Any(d => d.Id == monstruoParaB.Id); golpe++)
+                {
+                    b.SendNow(Opcode.Attack, new C2SAttack { TargetEntityId = monstruoParaB.Id });
+                    await Run(flota, 900);
+                }
+            }
+
+            Check($"B tiene experiencia que perder ({b.Xp})", b.Xp > 0);
+            var xpDeBAntesDeMorir = b.Xp;
+
+            // Los dos otra vez juntos en campo abierto, y A remata.
+            await Rutas(flota, (a, [campoA]), (b, [campoB]));
+            a.ResetPhase();
+            b.ResetPhase();
+
+            for (var golpe = 0; golpe < 60 && !a.Deaths.Any(d => d.Id == b.MyEntityId); golpe++)
+            {
+                a.SendNow(Opcode.Attack, new C2SAttack { TargetEntityId = b.MyEntityId });
+                await Run(flota, 850);
+            }
+
+            Check("A consigue matar a B en zona PvP", a.Deaths.Any(d => d.Id == b.MyEntityId));
+            // La penalización es el 5 % de la XP actual, en entero: con la XP de un monstruo (8)
+            // el 5 % es 0,4 y se trunca a 0. No es un fallo — protege a quien acaba de empezar —,
+            // así que lo que se comprueba es que nunca sube. El descuento con XP alta lo cubre el
+            // test unitario, que puede fijar el número exacto.
+            Check($"Morir en PvP nunca sube la experiencia ({xpDeBAntesDeMorir} → {b.Xp})", b.Xp <= xpDeBAntesDeMorir);
+            await Run(flota, 600);
+            Check($"B reaparece en el pueblo (y = {b.ServerPos.Y:F1})", b.ServerPos.Y > 52);
+            Check($"B reaparece con vida ({b.EntityHp.GetValueOrDefault(b.MyEntityId).Hp})",
+                b.EntityHp.GetValueOrDefault(b.MyEntityId).Hp > 0);
+
+            // ── 3. El criterio de aceptación: atacar desde el borde ───────
+            // A se queda en el último tile seguro (dentro de la puerta) y B justo al otro lado,
+            // a 1,3 tiles: dentro del alcance y con la puerta abierta entre medias, así que lo
+            // único que puede rechazar el golpe es la zona.
+            await Rutas(flota, (a, [puertaNorte, new Vec2(48.5f, 49.6f)]), (b, [new Vec2(48.5f, 47.4f)]));
+
+            // Por región y no por coordenada: entre la muralla (y = 48) y el pueblo (y ≥ 49) hay
+            // una banda que no pertenece a ninguna región declarada, y el margen de llegada del
+            // caminante del bot (0,3 tiles) puede dejarlo justo ahí.
+            var zonaA = map.Regions.Resolve(a.ServerPos);
+            var zonaB = map.Regions.Resolve(b.ServerPos);
+            Check($"A está en zona segura ({zonaA.Name}) y B en zona hostil ({zonaB.Name})",
+                zonaA.Flags.HasFlag(ZoneFlags.Safe) && zonaB.Flags.HasFlag(ZoneFlags.Pvp));
+
+            var vidaBorde = b.EntityHp.GetValueOrDefault(b.MyEntityId).Hp;
+            a.ResetPhase();
+            b.ResetPhase();
+            a.SendNow(Opcode.Attack, new C2SAttack { TargetEntityId = b.MyEntityId });
+            await Run(flota, 800);
+
+            Check($"Desde el borde de la plaza no se pega al de fuera (vida de B sigue en {vidaBorde})",
+                b.EntityHp.GetValueOrDefault(b.MyEntityId).Hp == vidaBorde && a.CombatEvents.Count == 0);
+            Check("...y el motivo es la zona segura del atacante",
+                a.SystemMessages.Any(m => m.Key == "combat.SafeZone"));
+
+            // ── 4. La víctima se refugia en la plaza ──────────────────────
+            await Rutas(flota, (b, [puertaNorte, puertaSur, plaza]), (a, []));
+            Check($"B se refugió en la plaza (y = {b.ServerPos.Y:F1})", b.ServerPos.Y > 52);
+
+            await Rutas(flota, (a, [new Vec2(plaza.X + 0.8f, plaza.Y)]), (b, []));
+            var vidaEnPlaza = b.EntityHp.GetValueOrDefault(b.MyEntityId).Hp;
+            a.ResetPhase();
+            b.ResetPhase();
+            a.SendNow(Opcode.Attack, new C2SAttack { TargetEntityId = b.MyEntityId });
+            await Run(flota, 800);
+
+            Check("Dentro de la plaza no se pega",
+                b.EntityHp.GetValueOrDefault(b.MyEntityId).Hp == vidaEnPlaza && a.CombatEvents.Count == 0);
+            Check("...y el atacante recibe el motivo",
+                a.SystemMessages.Any(m => m.Key is "combat.SafeZone" or "combat.TargetInSafeZone"));
+
+            // ── 5. Monstruos: existen, se les pega y sueltan botín ────────
+            a.ResetPhase();
+            await Rutas(flota, (a, [puertaSur, puertaNorte, campoA]), (b, []));
+            await Run(flota, 2000);
+
+            var monstruo = a.KnownEntities.Values.FirstOrDefault(e => e.Type == EntityType.Monster);
+            Check("Hay monstruos en el campo", monstruo is not null);
+
+            if (monstruo is not null)
+            {
+                await Rutas(flota, 25_000, (a, [new Vec2(monstruo.X, monstruo.Y)]), (b, []));
+
+                var xpAntes = a.Xp;
+                a.ResetPhase();
+
+                for (var golpe = 0; golpe < 40 && !a.Deaths.Any(d => d.Id == monstruo.Id); golpe++)
+                {
+                    a.SendNow(Opcode.Attack, new C2SAttack { TargetEntityId = monstruo.Id });
+                    await Run(flota, 900);
+                }
+
+                Check("Se puede pegar a un monstruo en cualquier zona con monstruos",
+                    a.CombatEvents.Any(e => e.TargetId == monstruo.Id));
+                Check("El monstruo acaba muriendo", a.Deaths.Any(d => d.Id == monstruo.Id));
+                Check($"Matarlo da experiencia ({xpAntes} → {a.Xp})", a.Xp > xpAntes);
+
+                if (a.LootBags.Count > 0)
+                {
+                    var saco = a.LootBags.Values.First();
+                    a.LastInventoryChanges.Clear();
+                    a.SystemMessages.Clear();
+                    a.SendNow(Opcode.LootTake, new C2SLootTake { LootEntityId = saco.EntityId, Slot = 0 });
+                    await Run(flota, 800);
+
+                    var motivo = a.SystemMessages.Count > 0 ? $" (dijo {a.SystemMessages[^1].Key})" : string.Empty;
+                    Check($"Coger del saco mete el ítem en la bolsa{motivo}", a.LastInventoryChanges.Count > 0);
+                }
+                else
+                {
+                    Console.WriteLine("  [ -- ] El monstruo no soltó botín esta vez (la tabla es probabilística)");
+                }
+            }
+
+            // ── 6. Flag de combate: salir en combate no saca del mundo ────
+            // docs/00 §6.2 / FASE-09 §2 D11: si "me van a matar" se resolviera con Alt+F4, el PvP
+            // no valdría de nada. B se desconecta recién golpeado y su entidad tiene que seguir en
+            // el mundo — lo comprueba A, que la sigue viendo.
+            await Rutas(flota, (a, [puertaSur, puertaNorte, campoA]), (b, [puertaSur, puertaNorte, campoB]));
+            a.ResetPhase();
+            b.ResetPhase();
+            a.SendNow(Opcode.Attack, new C2SAttack { TargetEntityId = b.MyEntityId });
+            await Run(flota, 800);
+
+            Check("B queda en combate justo antes de desconectar", b.InCombat);
+
+            var entidadDeB = b.MyEntityId;
+            await b.DisconnectAsync();
+            await Run([a], 2500);
+
+            Check("Tras desconectar en combate, la entidad de B sigue en el mundo",
+                !a.Despawned.Any(d => d.Id == entidadDeB));
+
+            Check("Ningún bot fue expulsado", a.Kicked is null && b.Kicked is null);
+
+            Console.WriteLine($"\nusername A = {a.Username} (personaje {a.CharacterId})");
+            Console.WriteLine($"username B = {b.Username} (personaje {b.CharacterId})");
+
+            return Summarize();
+        }
+        finally
+        {
+            await a.DisposeAsync();
+            await b.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Lleva a varios bots por sus rutas a la vez, waypoint a waypoint. Hace falta ruta y no
+    /// destino porque el caminante del bot es ingenuo (signo de la diferencia) y la muralla del
+    /// pueblo tiene una sola puerta: en línea recta se quedaría pegado al muro.
+    /// </summary>
+    private static async Task Rutas(List<Bot> flota, params (Bot Bot, Vec2[] Ruta)[] rutas)
+        => await Rutas(flota, 30_000, rutas);
+
+    private static async Task Rutas(List<Bot> flota, int ms, params (Bot Bot, Vec2[] Ruta)[] rutas)
+    {
+        var indices = new int[rutas.Length];
+
+        for (var i = 0; i < rutas.Length; i++)
+        {
+            if (rutas[i].Ruta.Length > 0)
+            {
+                rutas[i].Bot.WalkTarget = rutas[i].Ruta[0];
+                indices[i] = 1;
+            }
+        }
+
+        for (var restante = ms; restante > 0; restante -= 400)
+        {
+            var pendiente = false;
+
+            for (var i = 0; i < rutas.Length; i++)
+            {
+                var (bot, ruta) = rutas[i];
+
+                if (bot.WalkTarget is null && indices[i] < ruta.Length)
+                {
+                    bot.WalkTarget = ruta[indices[i]];
+                    indices[i]++;
+                }
+
+                pendiente |= bot.WalkTarget is not null;
+            }
+
+            if (!pendiente)
+            {
+                return;
+            }
+
+            await Run(flota, 400);
+        }
     }
 
     private static int Summarize()

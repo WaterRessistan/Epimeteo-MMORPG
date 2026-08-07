@@ -21,4 +21,7 @@ public static class InputActions
 
     /// <summary>Interactuar con el NPC más cercano (E): abre su tienda, o la cierra si ya está abierta.</summary>
     public const string Interact = "interact";
+
+    /// <summary>Atacar al objetivo más cercano (espacio). El servidor decide si vale (Fase 9).</summary>
+    public const string Attack = "attack";
 }

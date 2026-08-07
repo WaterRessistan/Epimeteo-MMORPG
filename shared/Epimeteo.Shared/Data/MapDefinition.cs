@@ -34,4 +34,32 @@ public sealed record MapDefinition
 
     /// <summary>Regiones con flags. Puede estar vacío: entonces todo el mapa es <c>None</c>.</summary>
     public MapRegionDefinition[] Regions { get; init; } = [];
+
+    /// <summary>
+    /// Puntos de aparición de monstruos (Fase 9). Van en el mapa porque son colocación, igual que
+    /// las regiones (<c>docs/03</c>: "puntos de spawn en el mapa"). El cliente los ignora — los
+    /// monstruos le llegan por <c>EntitySpawn</c> como cualquier otra entidad— y por eso tampoco
+    /// entran en el hash del mapa (FASE-09 §2 D14).
+    /// </summary>
+    public MapSpawnPointDefinition[] Spawns { get; init; } = [];
+}
+
+/// <summary>Un punto de aparición de monstruos dentro de un mapa.</summary>
+public sealed record MapSpawnPointDefinition
+{
+    /// <summary>Clave del monstruo, ej. <c>monster.slime</c>.</summary>
+    public required string MonsterKey { get; init; }
+
+    public required float X { get; init; }
+
+    public required float Y { get; init; }
+
+    /// <summary>Cuántos mantener vivos a la vez en este punto.</summary>
+    public int Count { get; init; } = 1;
+
+    /// <summary>Radio en tiles dentro del que aparecen y patrullan.</summary>
+    public float Radius { get; init; } = 4f;
+
+    /// <summary>Segundos entre que uno muere y vuelve a aparecer.</summary>
+    public int RespawnSeconds { get; init; } = 30;
 }

@@ -46,6 +46,18 @@ public class WorldEntity
     public int Cell { get; internal set; }
 
     /// <summary>
+    /// Si se le puede pegar (Fase 9). Falso por defecto: un tendero o un saco de loot no son
+    /// objetivos, y el fallo seguro es no dejar atacar. Lo sobrescriben jugadores y monstruos.
+    /// </summary>
+    public virtual bool IsAttackable => false;
+
+    /// <summary>Verdadero mientras le quede vida.</summary>
+    public bool IsAlive => Hp > 0;
+
+    /// <summary>Stats con los que entra en <c>CombatFormulas</c>. Los resuelve cada subtipo.</summary>
+    public virtual CombatantStats CombatStats => default;
+
+    /// <summary>
     /// Último tick en el que <see cref="State"/> cambió. Es lo que permite que un snapshot no
     /// repita entidades quietas: se compara con el último tick que recibió cada observador.
     /// </summary>

@@ -165,10 +165,20 @@ public sealed class SessionMessageHandler
             return;
         }
 
+        var now = ServerClock.NowMs;
+
+        // El sello lo originó el propio servidor en su último Pong: lo que tarda en volver es el
+        // RTT, medido sin creerse ningún número calculado por el cliente (FASE-09 §2 D1). El
+        // primer Ping de una conexión llega con 0 y no mide nada.
+        if (ping.LastServerTimeMs > 0)
+        {
+            session.RecordRtt(now - ping.LastServerTimeMs);
+        }
+
         session.Send(Opcode.Pong, new S2CPong
         {
             ClientTimeMs = ping.ClientTimeMs,
-            ServerTimeMs = ServerClock.NowMs,
+            ServerTimeMs = now,
         });
     }
 
@@ -323,7 +333,9 @@ public sealed class SessionMessageHandler
             character.StatVit,
             character.StatDex,
             items,
-            character.Gold);
+            character.Gold,
+            character.Level,
+            character.Xp);
 
         session.Send(Opcode.WorldEnter, new S2CWorldEnter
         {

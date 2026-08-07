@@ -27,6 +27,13 @@ public partial class WorldScreen : Node2D
     /// </summary>
     private const float InteractRangeTiles = 3.5f;
 
+    /// <summary>
+    /// Rango cliente para elegir a quién apuntar. Generoso frente al alcance real del servidor
+    /// (<c>CombatConstants.MeleeRangeTiles</c>) por el mismo motivo que <see cref="InteractRangeTiles"/>:
+    /// pasarse sólo produce algún rechazo de más, nunca un golpe que no debía valer.
+    /// </summary>
+    private const float TargetRangeTiles = 2.5f;
+
     private readonly Dictionary<int, RemoteEntity> _remotes = [];
 
     /// <summary>Reloj de interpolación. Vive en <c>Shared</c> y tiene sus propios tests.</summary>
@@ -43,6 +50,8 @@ public partial class WorldScreen : Node2D
 
     private string _regionName = string.Empty;
     private ZoneFlags _regionFlags = ZoneFlags.None;
+    private int _myHp;
+    private int _myHpMax;
 
     /// <inheritdoc />
     public override void _Ready()
@@ -77,6 +86,10 @@ public partial class WorldScreen : Node2D
         }
 
         _myEntityId = enter.MyEntityId;
+        // HpMax no viaja en WorldEnter (CharacterStats sólo lleva la vida actual): lo trae el
+        // EquipmentUpdate que llega justo después, porque depende del equipo (FASE-06 §2 D5).
+        _myHp = enter.Stats.Hp;
+        _myHpMax = enter.Stats.Hp;
 
         _renderer.SetMap(map);
         _camera.SetMap(map);
@@ -92,6 +105,10 @@ public partial class WorldScreen : Node2D
         _net.EntitySpawnReceived += OnEntitySpawn;
         _net.EntityDespawnReceived += OnEntityDespawn;
         _net.ZoneFlagsUpdateReceived += OnZoneFlags;
+        _net.EntityStatsReceived += OnEntityStats;
+        _net.EquipmentUpdateReceived += OnEquipmentUpdate;
+        _net.EntityDeathReceived += OnEntityDeath;
+        _net.CombatEventReceived += OnCombatEvent;
         _net.Kicked += OnKicked;
 
         // Hasta aquí sólo se ha preparado el cliente. WorldReady le dice al servidor que ya puede
@@ -106,6 +123,10 @@ public partial class WorldScreen : Node2D
         _net.EntitySpawnReceived -= OnEntitySpawn;
         _net.EntityDespawnReceived -= OnEntityDespawn;
         _net.ZoneFlagsUpdateReceived -= OnZoneFlags;
+        _net.EntityStatsReceived -= OnEntityStats;
+        _net.EquipmentUpdateReceived -= OnEquipmentUpdate;
+        _net.EntityDeathReceived -= OnEntityDeath;
+        _net.CombatEventReceived -= OnCombatEvent;
         _net.Kicked -= OnKicked;
     }
 
@@ -129,6 +150,83 @@ public partial class WorldScreen : Node2D
         _renderer.QueueRedraw();
         UpdateHud();
         HandleInteract();
+        HandleAttack();
+    }
+
+    /// <summary>
+    /// Tecla <c>attack</c> (espacio): pega al objetivo atacable más cercano. El cliente sólo elige
+    /// a quién apuntar; si vale o no lo decide el servidor (FASE-09 §2 D3), así que aquí no se
+    /// comprueba ni zona ni alcance — sólo se evita mandar un ataque sin nadie delante.
+    /// </summary>
+    private void HandleAttack()
+    {
+        if (!Input.IsActionJustPressed(InputActions.Attack) || _local is null)
+        {
+            return;
+        }
+
+        var target = FindNearestTarget(_local.Current.Pos);
+        if (target is not null)
+        {
+            _net.SendAttack(target.Id);
+        }
+    }
+
+    private RemoteEntity? FindNearestTarget(Vec2 fromPos)
+    {
+        RemoteEntity? nearest = null;
+        var nearestDistanceSq = TargetRangeTiles * TargetRangeTiles;
+
+        foreach (var remote in _remotes.Values)
+        {
+            if (remote.Type is not (EntityType.Monster or EntityType.Player) || !remote.IsAlive)
+            {
+                continue;
+            }
+
+            var distanceSq = Vec2.DistanceSquared(fromPos, remote.State.Pos);
+            if (distanceSq <= nearestDistanceSq)
+            {
+                nearest = remote;
+                nearestDistanceSq = distanceSq;
+            }
+        }
+
+        return nearest;
+    }
+
+    private void OnEntityStats(S2CEntityStats stats)
+    {
+        if (stats.Id == _myEntityId)
+        {
+            _myHp = stats.Hp;
+            _myHpMax = stats.HpMax;
+            return;
+        }
+
+        if (_remotes.TryGetValue(stats.Id, out var remote))
+        {
+            remote.Hp = stats.Hp;
+            remote.HpMax = stats.HpMax;
+        }
+    }
+
+    private void OnEquipmentUpdate(S2CEquipmentUpdate update) => _myHpMax = update.HpMax;
+
+    private void OnEntityDeath(S2CEntityDeath death)
+    {
+        if (_remotes.TryGetValue(death.Id, out var remote))
+        {
+            remote.Hp = 0;
+        }
+    }
+
+    private void OnCombatEvent(S2CCombatEvent evt)
+    {
+        // Sin arte todavía: los números de daño van al log, que es el instrumento con el que se
+        // verifica esta fase sin poder abrir Godot (mismo criterio que el HUD de la Fase 4).
+        var critical = evt.Flags.HasFlag(CombatEventFlags.Critical) ? " ¡crítico!" : string.Empty;
+        GD.Print($"{evt.AttackerId} → {evt.TargetId}: {evt.Amount}{critical}");
     }
 
     /// <summary>
@@ -253,6 +351,14 @@ public partial class WorldScreen : Node2D
             _local.Prediction.Corrections,
             _local.Prediction.MaxErrorTiles,
             _local.Prediction.PendingCount);
+
+        var target = FindNearestTarget(_local.Current.Pos);
+        _hud.SetCombat(
+            _myHp,
+            _myHpMax,
+            _net.Xp,
+            target is null ? "sin objetivo" : $"{target.Name} {target.Hp}/{target.HpMax}",
+            _net.InCombat);
 
         // Mientras no llegue el primer ZoneFlagsUpdate se enseña lo que el cliente deduce del
         // mapa; en cuanto el servidor habla, manda él.

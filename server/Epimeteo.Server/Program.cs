@@ -7,6 +7,7 @@ using Epimeteo.Server.Net;
 using Epimeteo.Server.Persistence;
 using Epimeteo.Server.Persistence.Accounts;
 using Epimeteo.Server.Persistence.Characters;
+using Epimeteo.Server.Persistence.Combat;
 using Epimeteo.Server.Persistence.Economy;
 using Epimeteo.Server.Persistence.Farm;
 using Epimeteo.Server.Persistence.Items;
@@ -61,6 +62,7 @@ try
     var shopCatalog = new ShopCatalog(contentRoot);
     builder.Services.AddSingleton(shopCatalog);
     builder.Services.AddSingleton(new CropCatalog(contentRoot));
+    builder.Services.AddSingleton(new MonsterCatalog(contentRoot));
     builder.Services.AddSingleton<CharacterRepository>();
     builder.Services.AddSingleton<CharacterService>();
     builder.Services.AddSingleton<ItemRepository>();
@@ -69,17 +71,20 @@ try
     builder.Services.AddSingleton<FarmPlotRepository>();
     builder.Services.AddSingleton<FarmTileRepository>();
     builder.Services.AddSingleton<FarmCalendarRepository>();
+    builder.Services.AddSingleton<CombatLogRepository>();
     builder.Services.AddSingleton<EntityIdAllocator>();
     builder.Services.AddSingleton<WorldInbox>();
     builder.Services.AddSingleton<IWorldInbox>(sp => sp.GetRequiredService<WorldInbox>());
-    builder.Services.AddSingleton<CharacterPositionSaver>();
-    builder.Services.AddSingleton<IPositionSink>(sp => sp.GetRequiredService<CharacterPositionSaver>());
+    builder.Services.AddSingleton<CharacterSaver>();
+    builder.Services.AddSingleton<ICharacterSink>(sp => sp.GetRequiredService<CharacterSaver>());
     builder.Services.AddSingleton<InventorySaver>();
     builder.Services.AddSingleton<IInventorySink>(sp => sp.GetRequiredService<InventorySaver>());
     builder.Services.AddSingleton<EconomySaver>();
     builder.Services.AddSingleton<IEconomySink>(sp => sp.GetRequiredService<EconomySaver>());
     builder.Services.AddSingleton<FarmTileSaver>();
     builder.Services.AddSingleton<IFarmSink>(sp => sp.GetRequiredService<FarmTileSaver>());
+    builder.Services.AddSingleton<CombatLogSaver>();
+    builder.Services.AddSingleton<ICombatLogSink>(sp => sp.GetRequiredService<CombatLogSaver>());
 
     // El stock de tiendas y el estado de granja se cargan una vez aquí, de forma
     // síncrona-bloqueante, igual que MigrationRunner.Run un poco más arriba: es el arranque del
@@ -105,10 +110,11 @@ try
 
     // Las colas de guardado arrancan antes que el bucle y, por tanto, se paran después: así el
     // vaciado final del apagado todavía tiene quien lo escriba.
-    builder.Services.AddHostedService(sp => sp.GetRequiredService<CharacterPositionSaver>());
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<CharacterSaver>());
     builder.Services.AddHostedService(sp => sp.GetRequiredService<InventorySaver>());
     builder.Services.AddHostedService(sp => sp.GetRequiredService<EconomySaver>());
     builder.Services.AddHostedService(sp => sp.GetRequiredService<FarmTileSaver>());
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<CombatLogSaver>());
     builder.Services.AddHostedService<GameLoopService>();
 
     builder.WebHost.ConfigureKestrel(kestrel =>
@@ -198,7 +204,8 @@ try
 
     app.MapGet("/status", (
         SessionManager sessions, GameLoop loop, GameWorld world,
-        CharacterPositionSaver saver, InventorySaver invSaver, EconomySaver econSaver, FarmTileSaver farmSaver) =>
+        CharacterSaver saver, InventorySaver invSaver, EconomySaver econSaver, FarmTileSaver farmSaver,
+        CombatLogSaver combatSaver) =>
     {
         var stats = loop.Metrics.Snapshot();
         return Results.Json(new
@@ -214,6 +221,8 @@ try
                 pendingInventorySaves = invSaver.PendingCount,
                 pendingEconomySaves = econSaver.PendingCount,
                 pendingFarmSaves = farmSaver.PendingCount,
+                pendingCombatSaves = combatSaver.PendingCount,
+                monsters = world.MonsterCount,
             },
             tick = new
             {

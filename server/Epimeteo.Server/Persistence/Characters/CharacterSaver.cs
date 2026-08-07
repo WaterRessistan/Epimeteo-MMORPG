@@ -7,18 +7,18 @@ using ILogger = Serilog.ILogger;
 namespace Epimeteo.Server.Persistence.Characters;
 
 /// <summary>
-/// La cola de guardado de posiciones: el tick encola structs y este servicio los escribe en
+/// La cola de guardado de personajes: el tick encola structs y este servicio los escribe en
 /// Postgres desde su propia tarea. Es la aplicación literal de la regla "nada se escribe en BD
 /// dentro del tick" (<c>docs/00 § Persistencia</c>).
 /// <para>
-/// La cola descarta el guardado <b>más antiguo</b> si se llena: si la BD va lenta, la posición
-/// vieja de un jugador no vale nada comparada con la nueva, y bloquear el tick para no perderla
-/// sería mucho peor que perderla.
+/// La cola descarta el guardado <b>más antiguo</b> si se llena: cada elemento es una instantánea
+/// completa del personaje, así que uno viejo no vale nada comparado con el siguiente, y bloquear
+/// el tick para no perderlo sería mucho peor que perderlo.
 /// </para>
 /// </summary>
-public sealed class CharacterPositionSaver : IPositionSink, IHostedService
+public sealed class CharacterSaver : ICharacterSink, IHostedService
 {
-    private readonly Channel<PositionSave> _queue = Channel.CreateBounded<PositionSave>(
+    private readonly Channel<CharacterSave> _queue = Channel.CreateBounded<CharacterSave>(
         new BoundedChannelOptions(4096)
         {
             FullMode = BoundedChannelFullMode.DropOldest,
@@ -27,17 +27,17 @@ public sealed class CharacterPositionSaver : IPositionSink, IHostedService
         });
 
     private readonly CharacterRepository _characters;
-    private readonly ILogger _log = Log.ForContext<CharacterPositionSaver>();
+    private readonly ILogger _log = Log.ForContext<CharacterSaver>();
     private readonly CancellationTokenSource _stopping = new();
     private Task? _worker;
 
-    public CharacterPositionSaver(CharacterRepository characters) => _characters = characters;
+    public CharacterSaver(CharacterRepository characters) => _characters = characters;
 
     /// <summary>Guardados pendientes de escribir. Aparece en <c>/status</c>.</summary>
     public int PendingCount => _queue.Reader.Count;
 
     /// <inheritdoc />
-    public void Enqueue(in PositionSave save) => _queue.Writer.TryWrite(save);
+    public void Enqueue(in CharacterSave save) => _queue.Writer.TryWrite(save);
 
     /// <inheritdoc />
     public Task StartAsync(CancellationToken cancellationToken)
@@ -73,14 +73,16 @@ public sealed class CharacterPositionSaver : IPositionSink, IHostedService
                 try
                 {
                     await _characters
-                        .UpdatePositionAsync(save.CharacterId, save.MapKey, save.X, save.Y, (int)save.Facing, save.Gold, token)
+                        .UpdateCharacterStateAsync(
+                            save.CharacterId, save.MapKey, save.X, save.Y, (int)save.Facing,
+                            save.Gold, save.Hp, save.Mp, save.Xp, save.Level, token)
                         .ConfigureAwait(false);
                     written++;
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     // Un fallo de BD no puede tumbar el guardado de los demás jugadores.
-                    _log.Error(ex, "No se pudo guardar la posición del personaje {CharacterId}", save.CharacterId);
+                    _log.Error(ex, "No se pudo guardar el personaje {CharacterId}", save.CharacterId);
                 }
             }
         }
@@ -89,6 +91,6 @@ public sealed class CharacterPositionSaver : IPositionSink, IHostedService
             // Apagado.
         }
 
-        _log.Information("Cola de posiciones cerrada tras {Written} guardados", written);
+        _log.Information("Cola de personajes cerrada tras {Written} guardados", written);
     }
 }

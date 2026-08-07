@@ -1,6 +1,7 @@
 using Epimeteo.Server.Content;
 using Epimeteo.Server.Farm;
 using Epimeteo.Server.Inventory;
+using Epimeteo.Server.Persistence.Combat;
 using Epimeteo.Server.Persistence.Economy;
 using Epimeteo.Server.Persistence.Farm;
 using Epimeteo.Server.Persistence.Items;
@@ -25,12 +26,13 @@ public sealed class WorldTests
     private static readonly ClassCatalog Classes = new(ContentPaths.ResolveContentRoot());
     private static readonly ShopCatalog Shops = new(ContentPaths.ResolveContentRoot());
     private static readonly CropCatalog Crops = new(ContentPaths.ResolveContentRoot());
+    private static readonly MonsterCatalog Monsters = new(ContentPaths.ResolveContentRoot());
 
-    private sealed class FakeSink : IPositionSink
+    private sealed class FakeSink : ICharacterSink
     {
-        public List<PositionSave> Saves { get; } = [];
+        public List<CharacterSave> Saves { get; } = [];
 
-        public void Enqueue(in PositionSave save) => Saves.Add(save);
+        public void Enqueue(in CharacterSave save) => Saves.Add(save);
     }
 
     private sealed class FakeInventorySink : IInventorySink
@@ -54,6 +56,13 @@ public sealed class WorldTests
         public void Enqueue(in FarmTileSave save) => Saves.Add(save);
     }
 
+    private sealed class FakeCombatLogSink : ICombatLogSink
+    {
+        public List<CombatLogSave> Saves { get; } = [];
+
+        public void Enqueue(in CombatLogSave save) => Saves.Add(save);
+    }
+
     private static (GameWorld World, WorldInbox Inbox, FakeSink Sink) Build(int saveIntervalSeconds = 30)
     {
         var maps = new MapCatalog(ContentPaths.ResolveContentRoot());
@@ -64,7 +73,7 @@ public sealed class WorldTests
         var world = new GameWorld(
             maps, inbox, sink, Items, Classes, new FakeInventorySink(),
             Shops, shopRuntime, new FakeEconomySink(), Crops, farmRuntime, new FakeFarmSink(),
-            new EntityIdAllocator(), saveIntervalSeconds);
+            Monsters, new FakeCombatLogSink(), new EntityIdAllocator(), saveIntervalSeconds);
         return (world, inbox, sink);
     }
 
@@ -96,7 +105,9 @@ public sealed class WorldTests
         StatVit: 6,
         StatDex: 4,
         Items: [],
-        Gold: gold);
+        Gold: gold,
+        Level: 1,
+        Xp: 0);
 
     private static void PostInput(WorldInbox inbox, int sessionId, uint seq, int dirX, int dirY)
     {
@@ -163,6 +174,52 @@ public sealed class WorldTests
         var player = world.Zones.First().FindBySession(1);
         Assert.NotNull(player);
         Assert.Equal(250, player.Gold);
+    }
+
+    /// <summary>
+    /// Los monstruos aparecen solos en los puntos de <c>content/maps/</c> (Fase 9). El barrido va a
+    /// 1 Hz, así que hace falta un segundo entero de ticks: comprobarlo en el tick 1 no probaría
+    /// nada.
+    /// </summary>
+    [Fact]
+    public void LosMonstruos_AparecenSolosEnSusPuntos()
+    {
+        var (world, _, _) = Build();
+
+        Assert.Equal(0, world.MonsterCount);
+
+        for (long tick = 1; tick <= SimulationConstants.TickRate; tick++)
+        {
+            world.Tick(tick, tick * SimulationConstants.TickDtMs);
+        }
+
+        Assert.True(world.MonsterCount > 0, "el spawner tendría que haber poblado los puntos del mapa");
+    }
+
+    /// <summary>
+    /// Regresión de la Fase 9: <c>characters.hp/mp/xp</c> existen desde la Fase 2 pero no se
+    /// escribían nunca — con combate, un moribundo se curaría del todo reconectando (§2 D12).
+    /// </summary>
+    [Fact]
+    public void AlGuardar_ViajanVidaYExperiencia()
+    {
+        var (world, inbox, sink) = Build();
+        var peer = new FakeWorldPeer(1);
+        inbox.PostControl(new PlayerJoinCommand(peer, VillageJoin(1, new Vec2(48.5f, 60.5f), 100)));
+        world.Tick(1, 50);
+
+        var player = world.Zones.First().FindBySession(1);
+        Assert.NotNull(player);
+        player.Hp = 37;
+        player.Xp = 1234;
+        player.VitalsDirty = true;
+
+        inbox.PostControl(new PlayerLeaveCommand(1));
+        world.Tick(2, 100);
+
+        var save = Assert.Single(sink.Saves);
+        Assert.Equal(37, save.Hp);
+        Assert.Equal(1234, save.Xp);
     }
 
     [Fact]

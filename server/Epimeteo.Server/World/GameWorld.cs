@@ -1,7 +1,9 @@
+using Epimeteo.Server.Combat;
 using Epimeteo.Server.Content;
 using Epimeteo.Server.Farm;
 using Epimeteo.Server.Inventory;
 using Epimeteo.Server.Persistence.Economy;
+using Epimeteo.Server.Persistence.Combat;
 using Epimeteo.Server.Persistence.Farm;
 using Epimeteo.Server.Persistence.Items;
 using Epimeteo.Server.Shop;
@@ -35,9 +37,12 @@ public sealed class GameWorld
     /// </summary>
     private const float FarmInteractionRangeTiles = 2f;
 
+    /// <summary>Radio para coger de un saco de loot, en tiles. Mismo criterio que tiendas y granja.</summary>
+    private const float LootRangeTiles = 2f;
+
     private readonly Dictionary<string, Zone> _zones = new(StringComparer.Ordinal);
     private readonly WorldInbox _inbox;
-    private readonly IPositionSink _positions;
+    private readonly ICharacterSink _characters;
     private readonly ItemCatalog _items;
     private readonly ClassCatalog _classes;
     private readonly IInventorySink _inventorySink;
@@ -47,6 +52,10 @@ public sealed class GameWorld
     private readonly CropCatalog _crops;
     private readonly FarmRuntime _farmRuntime;
     private readonly IFarmSink _farmSink;
+    private readonly MonsterCatalog _monsters;
+    private readonly ICombatLogSink _combatLogSink;
+    private readonly EntityIdAllocator _entityIds;
+    private readonly Dictionary<string, MonsterSpawner> _spawners = new(StringComparer.Ordinal);
     private readonly int _saveIntervalTicks;
     private readonly string _fallbackMapKey;
     private readonly ILogger _log = Log.ForContext<GameWorld>();
@@ -54,7 +63,7 @@ public sealed class GameWorld
     public GameWorld(
         MapCatalog maps,
         WorldInbox inbox,
-        IPositionSink positions,
+        ICharacterSink characters,
         ItemCatalog items,
         ClassCatalog classes,
         IInventorySink inventorySink,
@@ -64,11 +73,13 @@ public sealed class GameWorld
         CropCatalog crops,
         FarmRuntime farmRuntime,
         IFarmSink farmSink,
+        MonsterCatalog monsters,
+        ICombatLogSink combatLogSink,
         EntityIdAllocator entityIds,
         int saveIntervalSeconds = 30)
     {
         _inbox = inbox;
-        _positions = positions;
+        _characters = characters;
         _items = items;
         _classes = classes;
         _inventorySink = inventorySink;
@@ -78,6 +89,9 @@ public sealed class GameWorld
         _crops = crops;
         _farmRuntime = farmRuntime;
         _farmSink = farmSink;
+        _monsters = monsters;
+        _combatLogSink = combatLogSink;
+        _entityIds = entityIds;
         _saveIntervalTicks = saveIntervalSeconds * SimulationConstants.TickRate;
 
         var npcsByMap = new Dictionary<string, List<NpcEntity>>(StringComparer.Ordinal);
@@ -97,6 +111,7 @@ public sealed class GameWorld
         foreach (var map in maps.All)
         {
             _zones[map.Key] = new Zone(map, npcsByMap.GetValueOrDefault(map.Key));
+            _spawners[map.Key] = new MonsterSpawner(monsters, map);
         }
 
         _fallbackMapKey = _zones.ContainsKey("map.village") ? "map.village" : _zones.Keys.First();
@@ -110,6 +125,9 @@ public sealed class GameWorld
 
     /// <summary>Entidades vivas, sumando todas las zonas.</summary>
     public int EntityCount => _zones.Values.Sum(zone => zone.Entities.Count);
+
+    /// <summary>Monstruos vivos, sumando todas las zonas. Aparece en <c>/status</c>.</summary>
+    public int MonsterCount => _zones.Values.Sum(zone => zone.Monsters.Count);
 
     /// <summary>Un tick de mundo con el reloj del servidor.</summary>
     public void Tick(long tick) => Tick(tick, ServerClock.NowMs);
@@ -132,9 +150,12 @@ public sealed class GameWorld
             zone.Tick(tick, nowMs);
         }
 
+        ResolveMonsterAttacks(nowMs);
+
         SweepSaves(tick);
         SweepRestock(tick);
         SweepFarmGrowth(tick);
+        SweepCombat(tick, nowMs);
     }
 
     /// <summary>
@@ -229,8 +250,33 @@ public sealed class GameWorld
         }
     }
 
-    private bool RemoveFrom(Zone zone, int sessionId)
+    /// <summary>
+    /// Saca a un jugador del mundo, salvo que tenga puesto el flag de combate PvP: entonces la
+    /// entidad se queda viva y atacable hasta que expire, y la saca <see cref="SweepCombat"/>
+    /// (<c>docs/00 §6.2</c>, FASE-09 §2 D11). Sin esto, "me van a matar" se resuelve con Alt+F4.
+    /// <para>
+    /// El estado se guarda ya, en el momento de pedir la salida: si el proceso se cae durante esos
+    /// 10 s, no se pierde nada.
+    /// </para>
+    /// </summary>
+    private bool RemoveFrom(Zone zone, int sessionId, bool force = false)
     {
+        if (!force && zone.FindBySession(sessionId) is { } pending && pending.IsInCombat(ServerClock.NowMs))
+        {
+            if (pending.PendingLeaveAtMs is null)
+            {
+                pending.PendingLeaveAtMs = pending.CombatFlagUntilMs;
+                _log.Information(
+                    "El personaje {CharacterId} pidió salir en combate; se queda {Ms} ms más en el mundo",
+                    pending.CharacterId, pending.CombatFlagUntilMs - ServerClock.NowMs);
+
+                Save(zone, pending, force: true);
+                SaveInventory(pending);
+            }
+
+            return true;
+        }
+
         var player = zone.Leave(sessionId);
         if (player is null)
         {
@@ -309,6 +355,14 @@ public sealed class GameWorld
 
                 case Opcode.FarmHarvest:
                     HandleFarmHarvest(message);
+                    break;
+
+                case Opcode.Attack:
+                    HandleAttack(message, nowMs);
+                    break;
+
+                case Opcode.LootTake:
+                    HandleLootTake(message, nowMs);
                     break;
 
                 default:
@@ -878,6 +932,441 @@ public sealed class GameWorld
         }
     }
 
+
+    // ── Combate ──────────────────────────────────────────────────────────
+
+    private void HandleAttack(in WorldMessage message, long nowMs)
+    {
+        if (!FrameCodec.TryDecodeBody<C2SAttack>(message.Payload, out var attack) || attack is null)
+        {
+            _log.Warning("Attack ilegible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (FindPlayerZone(message.SessionId) is not { } found)
+        {
+            return;
+        }
+
+        var (zone, player) = found;
+
+        if (player.IsDead)
+        {
+            SendCombatFailure(player, ResultCode.CannotAttackTarget);
+            return;
+        }
+
+        if (!zone.Entities.TryGetValue(attack.TargetEntityId, out var target))
+        {
+            SendCombatFailure(player, ResultCode.TargetNotFound);
+            return;
+        }
+
+        // Compensación de latencia: sólo para el alcance, y con el RTT que ha medido el propio
+        // servidor (FASE-09 §2 D1 y D2). Los flags de zona los mira CombatSystem contra la
+        // posición actual, no contra ésta.
+        var rewindMs = PositionHistory.RewindFor(player.Peer.RttMs);
+        var rangePos = target is PlayerEntity victim
+            ? victim.History.PositionAt(nowMs, rewindMs, victim.State.Pos)
+            : target.State.Pos;
+
+        var isPvp = target is PlayerEntity;
+        var cooldownReady = nowMs - player.LastAttackMs >= CombatConstants.AttackCooldownMs;
+
+        var verdict = CombatSystem.ValidateAttack(
+            player, target, rangePos, zone.Map, CombatConstants.MeleeRangeTiles, isPvp, cooldownReady);
+
+        if (verdict != ResultCode.Ok)
+        {
+            SendCombatFailure(player, verdict);
+            return;
+        }
+
+        player.LastAttackMs = nowMs;
+        ResolveHit(zone, player, target, nowMs);
+    }
+
+    /// <summary>
+    /// Los ataques que decidió la IA este tick. Pasan por exactamente la misma validación que los
+    /// de un jugador — un monstruo tampoco pega a través de un muro ni fuera de alcance.
+    /// </summary>
+    private void ResolveMonsterAttacks(long nowMs)
+    {
+        foreach (var zone in _zones.Values)
+        {
+            foreach (var (monster, targetId) in zone.PendingMonsterAttacks)
+            {
+                if (!zone.Entities.TryGetValue(targetId, out var target))
+                {
+                    continue;
+                }
+
+                var verdict = CombatSystem.ValidateAttack(
+                    monster, target, target.State.Pos, zone.Map,
+                    monster.Definition.AttackRangeTiles, requirePvpZone: false, cooldownReady: true);
+
+                if (verdict != ResultCode.Ok)
+                {
+                    continue;
+                }
+
+                monster.LastAttackMs = nowMs;
+                ResolveHit(zone, monster, target, nowMs);
+            }
+        }
+    }
+
+    /// <summary>Aplica un golpe ya validado: daño, aviso a los testigos, amenaza y muerte si toca.</summary>
+    private void ResolveHit(Zone zone, WorldEntity attacker, WorldEntity target, long nowMs)
+    {
+        var hit = CombatSystem.ApplyHit(attacker, target, zone.Rng);
+
+        BroadcastCombatEvent(zone, target, new S2CCombatEvent
+        {
+            AttackerId = attacker.Id,
+            TargetId = target.Id,
+            Kind = CombatEventKind.Damage,
+            Amount = hit.Damage,
+            Flags = hit.Critical ? CombatEventFlags.Critical : CombatEventFlags.None,
+        });
+
+        if (target is MonsterEntity monster)
+        {
+            // La amenaza es el daño hecho: quien más pega, manda (FASE-09 §2 D6).
+            monster.Aggro.Add(attacker.Id, hit.Damage);
+
+            if (monster.AiState is MonsterState.Idle or MonsterState.Patrol)
+            {
+                monster.AiState = MonsterState.Chase;
+            }
+        }
+
+        if (target is PlayerEntity victim)
+        {
+            victim.VitalsDirty = true;
+
+            // Sólo el PvP pone el flag de combate: que te muerda un lobo no debe impedirte salir
+            // del juego (docs/00 §6.2 habla de combate PvP).
+            if (attacker is PlayerEntity aggressor)
+            {
+                FlagCombat(aggressor, nowMs);
+                FlagCombat(victim, nowMs);
+            }
+        }
+
+        BroadcastEntityStats(zone, target);
+
+        if (!target.IsAlive)
+        {
+            HandleDeath(zone, attacker, target, nowMs);
+        }
+    }
+
+    private void HandleDeath(Zone zone, WorldEntity killer, WorldEntity target, long nowMs)
+    {
+        BroadcastToZone(zone, Opcode.EntityDeath, new S2CEntityDeath { Id = target.Id, KillerId = killer.Id });
+
+        switch (target)
+        {
+            case MonsterEntity monster:
+                HandleMonsterDeath(zone, killer, monster, nowMs);
+                break;
+
+            case PlayerEntity victim:
+                HandlePlayerDeath(zone, killer, victim, nowMs);
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    private void HandleMonsterDeath(Zone zone, WorldEntity killer, MonsterEntity monster, long nowMs)
+    {
+        // La XP va a quien más amenaza acumuló, que con la amenaza-por-daño es quien más pegó.
+        var topId = monster.Aggro.Top();
+        var winner = topId is null ? null : zone.Entities.GetValueOrDefault(topId.Value) as PlayerEntity;
+        winner ??= killer as PlayerEntity;
+
+        if (winner is not null)
+        {
+            GrantXp(winner, monster.Definition.XpReward);
+        }
+
+        SpawnLootBag(zone, monster, winner, nowMs);
+
+        _spawners[zone.Map.Key].NotifyDeath(monster, nowMs);
+        zone.RemoveEntity(monster.Id, DespawnReason.Death);
+    }
+
+    private void HandlePlayerDeath(Zone zone, WorldEntity killer, PlayerEntity victim, long nowMs)
+    {
+        victim.IsDead = true;
+        victim.VitalsDirty = true;
+
+        // Sin drop de inventario: el full-loot ahuyenta a los nuevos (docs/00 §6.3). La
+        // penalización es XP, y sólo en PvP — morir contra un monstruo ya cuesta el viaje de vuelta.
+        if (killer is PlayerEntity aggressor)
+        {
+            var lost = (long)(victim.Xp * CombatConstants.PvpXpLossFraction);
+            victim.Xp = Math.Max(0, victim.Xp - lost);
+            SendXpUpdate(victim);
+
+            _combatLogSink.Enqueue(new CombatLogSave(
+                victim.CharacterId,
+                aggressor.CharacterId,
+                zone.Map.Key,
+                zone.Map.Regions.Resolve(victim.State.Pos).Name,
+                victim.Level,
+                aggressor.Level,
+                lost));
+
+            _log.Information("PvP: {KillerName} mató a {VictimName} en {Region}; {XpLost} XP perdidos",
+                aggressor.Name, victim.Name, zone.Map.Regions.Resolve(victim.State.Pos).Name, lost);
+        }
+
+        Respawn(zone, victim, nowMs);
+    }
+
+    /// <summary>Reaparición en el pueblo con parte de la vida (<c>docs/00 §6.3</c>).</summary>
+    private void Respawn(Zone zone, PlayerEntity victim, long nowMs)
+    {
+        victim.IsDead = false;
+        victim.Hp = Math.Max(1, (int)(victim.HpMax * CombatConstants.RespawnHpFraction));
+        victim.CombatFlagUntilMs = 0;
+        victim.PositionDirty = true;
+        victim.VitalsDirty = true;
+
+        zone.Teleport(victim, zone.Map.Spawn, nowMs);
+
+        BroadcastEntityStats(zone, victim);
+        SendCombatFlag(victim, nowMs);
+    }
+
+    private void SpawnLootBag(Zone zone, MonsterEntity monster, PlayerEntity? owner, long nowMs)
+    {
+        var slots = new List<LootSlot>();
+
+        foreach (var entry in monster.Definition.Loot)
+        {
+            if (!zone.Rng.NextChance(entry.Chance))
+            {
+                continue;
+            }
+
+            slots.Add(new LootSlot
+            {
+                DefKey = entry.DefKey,
+                Quantity = zone.Rng.NextInt(entry.Min, entry.Max + 1),
+            });
+        }
+
+        if (slots.Count == 0)
+        {
+            return;
+        }
+
+        var bag = new LootBagEntity(
+            _entityIds.Next(),
+            monster.State.Pos,
+            slots,
+            owner?.CharacterId ?? 0,
+            nowMs + (CombatConstants.LootRightsSeconds * 1000L),
+            nowMs + (CombatConstants.LootDespawnSeconds * 1000L));
+
+        zone.AddEntity(bag);
+        BroadcastToZone(zone, Opcode.LootDrop, bag.ToDropMessage());
+    }
+
+    private void HandleLootTake(in WorldMessage message, long nowMs)
+    {
+        if (!FrameCodec.TryDecodeBody<C2SLootTake>(message.Payload, out var take) || take is null)
+        {
+            _log.Warning("LootTake ilegible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (FindPlayerZone(message.SessionId) is not { } found)
+        {
+            return;
+        }
+
+        var (zone, player) = found;
+
+        if (!zone.Entities.TryGetValue(take.LootEntityId, out var entity) || entity is not LootBagEntity bag)
+        {
+            SendCombatFailure(player, ResultCode.TargetNotFound);
+            return;
+        }
+
+        if (!CombatFormulas.IsWithinRange(player.State.Pos, bag.State.Pos, LootRangeTiles))
+        {
+            SendCombatFailure(player, ResultCode.TooFarAway);
+            return;
+        }
+
+        // Derecho de saqueo: durante el periodo exclusivo sólo su dueño (FASE-09 §2 D9).
+        if (!bag.CanTake(player.CharacterId, nowMs))
+        {
+            SendCombatFailure(player, ResultCode.CannotAttackTarget);
+            return;
+        }
+
+        if (take.Slot >= bag.Slots.Count || bag.Slots[take.Slot].IsEmpty)
+        {
+            SendCombatFailure(player, ResultCode.ItemNotFound);
+            return;
+        }
+
+        var slot = bag.Slots[take.Slot];
+        var result = InventorySystem.TryAddNew(player.Inventory, _items, slot.DefKey, slot.Quantity);
+        if (!result.Ok)
+        {
+            SendCombatFailure(player, result.Code);
+            return;
+        }
+
+        _economySink.Enqueue(new EconomySave(
+            EconomyLogKind.Loot, player.CharacterId, slot.DefKey, slot.Quantity, 0, player.Gold, null, null, null, null));
+
+        slot.Quantity = 0;
+        ApplyResult(player, result);
+
+        if (bag.IsEmpty)
+        {
+            zone.RemoveEntity(bag.Id, DespawnReason.OutOfRange);
+        }
+        else
+        {
+            BroadcastToZone(zone, Opcode.LootDrop, bag.ToDropMessage());
+        }
+    }
+
+    private void GrantXp(PlayerEntity player, long amount)
+    {
+        if (amount <= 0)
+        {
+            return;
+        }
+
+        player.Xp += amount;
+        player.VitalsDirty = true;
+        SendXpUpdate(player);
+    }
+
+    private static void SendXpUpdate(PlayerEntity player) => player.Peer.Send(Opcode.XpUpdate, new S2CXpUpdate
+    {
+        Xp = player.Xp,
+        // La curva de nivel es la Fase 10: aquí la XP se mueve pero nadie sube.
+        XpToNextLevel = 0,
+        Level = player.Level,
+        LeveledUp = false,
+    });
+
+    private static void FlagCombat(PlayerEntity player, long nowMs)
+    {
+        player.CombatFlagUntilMs = nowMs + CombatConstants.CombatFlagMs;
+        SendCombatFlag(player, nowMs);
+    }
+
+    private static void SendCombatFlag(PlayerEntity player, long nowMs) => player.Peer.Send(
+        Opcode.CombatFlagUpdate,
+        new S2CCombatFlagUpdate
+        {
+            InCombat = player.IsInCombat(nowMs),
+            MsRemaining = (int)Math.Max(0, player.CombatFlagUntilMs - nowMs),
+        });
+
+    private static void SendCombatFailure(PlayerEntity player, ResultCode code) => player.Peer.Send(
+        Opcode.SystemMessage, new S2CSystemMessage { Severity = 0, Key = $"combat.{code}", Args = [] });
+
+    /// <summary>Manda un evento a todo el que tenga a <paramref name="subject"/> en su área de interés.</summary>
+    private static void BroadcastCombatEvent(Zone zone, WorldEntity subject, S2CCombatEvent evt)
+    {
+        foreach (var observer in zone.Players)
+        {
+            if (observer.Id == subject.Id || observer.Known.Contains(subject.Id))
+            {
+                observer.Peer.Send(Opcode.CombatEvent, evt);
+            }
+        }
+    }
+
+    private static void BroadcastEntityStats(Zone zone, WorldEntity subject)
+    {
+        var stats = new S2CEntityStats
+        {
+            Id = subject.Id,
+            Hp = subject.Hp,
+            HpMax = subject.HpMax,
+            Mp = subject is PlayerEntity player ? player.Mp : 0,
+            MpMax = subject is PlayerEntity p ? p.MpMax : 0,
+            Level = subject is MonsterEntity monster ? monster.Definition.Level
+                : subject is PlayerEntity pl ? pl.Level : 1,
+        };
+
+        foreach (var observer in zone.Players)
+        {
+            if (observer.Id == subject.Id || observer.Known.Contains(subject.Id))
+            {
+                observer.Peer.Send(Opcode.EntityStats, stats);
+            }
+        }
+    }
+
+    private static void BroadcastToZone<T>(Zone zone, Opcode opcode, T payload)
+    {
+        foreach (var observer in zone.Players)
+        {
+            observer.Peer.Send(opcode, payload);
+        }
+    }
+
+    /// <summary>
+    /// Barrido de combate: repone monstruos, caduca sacos de loot, expira flags de combate y saca
+    /// del mundo a quien pidió salir estando en combate y ya cumplió sus 10 s (FASE-09 §2 D11).
+    /// Una vez por segundo: nada de esto necesita resolución de tick.
+    /// </summary>
+    private void SweepCombat(long tick, long nowMs)
+    {
+        if (tick % SimulationConstants.TickRate != 0)
+        {
+            return;
+        }
+
+        foreach (var zone in _zones.Values)
+        {
+            foreach (var monster in _spawners[zone.Map.Key].Spawn(_entityIds, zone.Map, nowMs))
+            {
+                zone.AddEntity(monster);
+            }
+
+            foreach (var bag in zone.LootBags.Where(bag => nowMs >= bag.DespawnAtMs).ToList())
+            {
+                zone.RemoveEntity(bag.Id, DespawnReason.OutOfRange);
+            }
+
+            foreach (var player in zone.Players.ToList())
+            {
+                if (player.CombatFlagUntilMs > 0 && !player.IsInCombat(nowMs))
+                {
+                    player.CombatFlagUntilMs = 0;
+                    SendCombatFlag(player, nowMs);
+                }
+
+                // Pidió salir en combate: la entidad se quedó viva y atacable, y ahora sí se va.
+                if (player.PendingLeaveAtMs is { } leaveAt && nowMs >= leaveAt)
+                {
+                    _log.Information("El personaje {CharacterId} sale del mundo tras expirar su flag de combate",
+                        player.CharacterId);
+                    RemoveFrom(zone, player.Peer.Id, force: true);
+                }
+            }
+        }
+    }
+
     // ── Granja ───────────────────────────────────────────────────────────
 
     private void HandleFarmTill(in WorldMessage message)
@@ -1228,6 +1717,12 @@ public sealed class GameWorld
         player.Hp = Math.Min(player.Hp, player.HpMax);
         player.Mp = Math.Min(player.Mp, player.MpMax);
 
+        // Ataque, defensa y destreza efectiva: lo que entra en CombatFormulas (Fase 9). Se
+        // recalculan aquí y no en cada golpe porque sólo cambian al tocar el equipo.
+        player.AttackPower = stats.Attack;
+        player.Defense = stats.Defense;
+        player.DexEffective = stats.DexEffective;
+
         var equipped = player.Inventory.Stacks
             .Where(stack => stack.Container == ContainerId.Equipped)
             .Select(ToInfo)
@@ -1295,20 +1790,25 @@ public sealed class GameWorld
 
     private void Save(Zone zone, PlayerEntity player, bool force = false)
     {
-        if (!player.PositionDirty && !player.GoldDirty && !force)
+        if (!player.PositionDirty && !player.GoldDirty && !player.VitalsDirty && !force)
         {
             return;
         }
 
-        _positions.Enqueue(new PositionSave(
+        _characters.Enqueue(new CharacterSave(
             player.CharacterId,
             zone.Map.Key,
             player.State.Pos.X,
             player.State.Pos.Y,
             player.State.Facing,
-            player.Gold));
+            player.Gold,
+            player.Hp,
+            player.Mp,
+            player.Xp,
+            player.Level));
 
         player.PositionDirty = false;
         player.GoldDirty = false;
+        player.VitalsDirty = false;
     }
 }

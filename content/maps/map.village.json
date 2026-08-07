@@ -147,5 +147,39 @@
         "outdoor"
       ]
     }
+  ],
+  "spawns": [
+    {
+      "monsterKey": "monster.slime",
+      "x": 20.5,
+      "y": 20.5,
+      "count": 2,
+      "radius": 5.0,
+      "respawnSeconds": 30
+    },
+    {
+      "monsterKey": "monster.slime",
+      "x": 40.5,
+      "y": 16.5,
+      "count": 2,
+      "radius": 5.0,
+      "respawnSeconds": 30
+    },
+    {
+      "monsterKey": "monster.wolf",
+      "x": 60.5,
+      "y": 24.5,
+      "count": 1,
+      "radius": 6.0,
+      "respawnSeconds": 60
+    },
+    {
+      "monsterKey": "monster.wolf",
+      "x": 72.5,
+      "y": 12.5,
+      "count": 1,
+      "radius": 6.0,
+      "respawnSeconds": 60
+    }
   ]
 }

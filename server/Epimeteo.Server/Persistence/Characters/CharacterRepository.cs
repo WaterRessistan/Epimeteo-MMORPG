@@ -163,11 +163,18 @@ public sealed class CharacterRepository(NpgsqlConnectionFactory connections, Ite
     /// una segunda escritura sobre la misma fila.
     /// </summary>
     /// <summary>
-    /// Vuelca posición <b>y oro</b> en el mismo <c>UPDATE</c> (FASE-07 §2 D2): son escalares de la
-    /// misma fila, y ambos los guarda la misma cola asíncrona (<c>CharacterPositionSaver</c>).
+    /// Vuelca en un solo <c>UPDATE</c> todos los escalares que cambian mientras se juega: posición,
+    /// oro (Fase 7) y vida/maná/XP/nivel (Fase 9). Son campos de la misma fila y los guarda la
+    /// misma cola asíncrona (<c>CharacterSaver</c>): partirlos en varias sentencias sería tener
+    /// varios escritores peleándose por la misma fila.
+    /// <para>
+    /// Vida, maná y XP no se escribían hasta la Fase 9 aunque sus columnas existen desde la Fase 2
+    /// — hueco real que sólo se notó al haber combate (FASE-09 §2 D12).
+    /// </para>
     /// </summary>
-    public async Task<bool> UpdatePositionAsync(
-        long characterId, string mapKey, float posX, float posY, int facing, long gold, CancellationToken ct = default)
+    public async Task<bool> UpdateCharacterStateAsync(
+        long characterId, string mapKey, float posX, float posY, int facing, long gold,
+        int hp, int mp, long xp, int level, CancellationToken ct = default)
     {
         await using var connection = await connections.OpenAsync(ct).ConfigureAwait(false);
         var affected = await connection.ExecuteAsync(
@@ -179,10 +186,14 @@ public sealed class CharacterRepository(NpgsqlConnectionFactory connections, Ite
                        pos_y = @posY,
                        facing = @facing,
                        gold = @gold,
+                       hp = @hp,
+                       mp = @mp,
+                       xp = @xp,
+                       level = @level,
                        last_played_at = now()
                  WHERE id = @characterId AND deleted_at IS NULL
                 """,
-                new { characterId, mapKey, posX, posY, facing = (short)facing, gold },
+                new { characterId, mapKey, posX, posY, facing = (short)facing, gold, hp, mp, xp, level },
                 cancellationToken: ct)).ConfigureAwait(false);
 
         return affected > 0;
