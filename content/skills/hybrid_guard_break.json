@@ -1,0 +1,11 @@
+{
+  "key": "skill.hybrid_guard_break",
+  "displayName": "Quiebra Guardia",
+  "classKey": "class.hybrid",
+  "requiredLevel": 7,
+  "manaCost": 20,
+  "cooldownMs": 7000,
+  "kind": "Damage",
+  "power": 28,
+  "rangeTiles": 1.8
+}

@@ -20,6 +20,7 @@ public partial class WorldHud : Control
     private Label _network = null!;
     private Label _region = null!;
     private Label _prediction = null!;
+    private Label _skills = null!;
 
     /// <inheritdoc />
     public override void _Ready()
@@ -29,6 +30,7 @@ public partial class WorldHud : Control
         _region = GetNode<Label>("Panel/Lines/Region");
         _prediction = GetNode<Label>("Panel/Lines/Prediction");
         _combat = GetNode<Label>("Panel/Lines/Combat");
+        _skills = GetNode<Label>("Panel/Lines/Skills");
     }
 
     /// <summary>Posición predicha del jugador y entidades visibles.</summary>
@@ -59,17 +61,24 @@ public partial class WorldHud : Control
 
     /// <summary>Correcciones acumuladas y peor error. Con 0 ms de latencia tienen que quedarse en cero.</summary>
     /// <summary>
-    /// Vida propia, objetivo y flag de combate (Fase 9). Sin arte: es el mismo criterio que el
-    /// resto del HUD — números, que es lo que hace falta para verificar.
+    /// Vida, nivel/XP, objetivo y flag de combate (Fase 9, nivel/XP ampliado en Fase 10). Sin arte:
+    /// es el mismo criterio que el resto del HUD — números, que es lo que hace falta para verificar.
     /// </summary>
-    public void SetCombat(int hp, int hpMax, long xp, string targetLabel, bool inCombat)
+    public void SetCombat(int hp, int hpMax, int level, long xp, long xpToNextLevel, string targetLabel, bool inCombat)
     {
-        _combat.Text = $"HP {hp}/{hpMax}  ·  XP {xp}  ·  {targetLabel}";
+        _combat.Text = $"HP {hp}/{hpMax}  ·  Nv {level} ({xp}/{xpToNextLevel} XP)  ·  {targetLabel}";
         _combat.AddThemeColorOverride("font_color", inCombat ? Hostile : Normal);
     }
 
     public void SetPrediction(int corrections, float maxErrorTiles, int pendingInputs) =>
         _prediction.Text = $"corr {corrections}  ·  err máx {maxErrorTiles:F3} t  ·  pend {pendingInputs}";
+
+    /// <summary>
+    /// Barra de habilidades (Fase 10): tecla, clave, y cooldown restante en segundos calculado por
+    /// el cliente de forma optimista — el servidor manda <c>SkillNotUnlocked</c>/<c>OnCooldown</c>
+    /// si al final no valía (§7 del plan de fase).
+    /// </summary>
+    public void SetSkills(string text) => _skills.Text = text;
 
     /// <summary>Mensaje de error a pantalla completa. Se usa si el contenido no cuadra con el servidor.</summary>
     public void ShowFatal(string message)
@@ -79,5 +88,6 @@ public partial class WorldHud : Control
         _network.Text = string.Empty;
         _region.Text = string.Empty;
         _prediction.Text = string.Empty;
+        _skills.Text = string.Empty;
     }
 }

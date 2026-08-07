@@ -54,7 +54,8 @@ internal static class TestWorld
         Items: [],
         Gold: gold,
         Level: 1,
-        Xp: 0);
+        Xp: 0,
+        StatPoints: 0);
 
     /// <summary>Input de movimiento en una dirección.</summary>
     public static MoveInput Input(uint seq, int dirX, int dirY) =>

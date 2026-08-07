@@ -105,13 +105,23 @@ public static class CombatSystem
     /// <summary>
     /// Aplica un golpe ya validado: tira el daño y lo resta. Devuelve el resultado para poder
     /// mandarlo en <c>CombatEvent</c> y sumar amenaza.
+    /// <para>
+    /// <paramref name="powerBonus"/> es el bonus plano de una habilidad (FASE-10 §2 D8): un golpe
+    /// de habilidad no tiene una fórmula de daño aparte, es la misma de un ataque básico con más
+    /// ataque de partida — dispersión y crítico incluidos, igual que el resto de golpes.
+    /// </para>
     /// </summary>
-    public static HitResult ApplyHit(WorldEntity attacker, WorldEntity target, DeterministicRng rng)
+    public static HitResult ApplyHit(WorldEntity attacker, WorldEntity target, DeterministicRng rng, int powerBonus = 0)
     {
         ArgumentNullException.ThrowIfNull(attacker);
         ArgumentNullException.ThrowIfNull(target);
 
-        var hit = CombatFormulas.Hit(attacker.CombatStats, target.CombatStats, rng);
+        var attackerStats = attacker.CombatStats;
+        var boosted = powerBonus == 0
+            ? attackerStats
+            : attackerStats with { Attack = attackerStats.Attack + powerBonus };
+
+        var hit = CombatFormulas.Hit(boosted, target.CombatStats, rng);
         target.Hp = Math.Max(0, target.Hp - hit.Damage);
         return hit;
     }

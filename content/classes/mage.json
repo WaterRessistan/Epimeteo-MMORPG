@@ -12,5 +12,7 @@
     { "defKey": "item.health_potion", "quantity": 2 },
     { "defKey": "item.iron_ore", "quantity": 3 }
   ],
-  "startingGold": 100
+  "startingGold": 100,
+  "hpPerLevel": 5,
+  "mpPerLevel": 12
 }

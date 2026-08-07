@@ -355,7 +355,7 @@ public sealed class InventorySystemTests
         Assert.True(Classes.TryGet("class.warrior", out var warrior));
         var inv = Inventory();
 
-        var stats = InventorySystem.ComputeDerivedStats(inv, Items, warrior!, baseStr: 10, baseInt: 3, baseVit: 8, baseDex: 5);
+        var stats = InventorySystem.ComputeDerivedStats(inv, Items, warrior!, baseStr: 10, baseInt: 3, baseVit: 8, baseDex: 5, level: 1);
 
         Assert.Equal(warrior!.BaseHp, stats.HpMax);
         Assert.Equal(warrior.BaseMp, stats.MpMax);
@@ -371,7 +371,7 @@ public sealed class InventorySystemTests
             Stack("item.leather_chest", ContainerId.Equipped, (byte)EquipSlot.Chest),
             Stack("item.copper_ring", ContainerId.Equipped, (byte)EquipSlot.Ring1));
 
-        var stats = InventorySystem.ComputeDerivedStats(inv, Items, warrior!, baseStr: 10, baseInt: 3, baseVit: 8, baseDex: 5);
+        var stats = InventorySystem.ComputeDerivedStats(inv, Items, warrior!, baseStr: 10, baseInt: 3, baseVit: 8, baseDex: 5, level: 1);
 
         Assert.Equal(warrior!.BaseHp + 15, stats.HpMax);
         Assert.Equal(warrior.BaseMp + 5, stats.MpMax);
@@ -385,7 +385,7 @@ public sealed class InventorySystemTests
         Assert.True(Classes.TryGet("class.warrior", out var warrior));
         var inv = Inventory(Stack("item.leather_chest", ContainerId.ArmorBag, 0)); // en la bolsa, no puesto
 
-        var stats = InventorySystem.ComputeDerivedStats(inv, Items, warrior!, baseStr: 10, baseInt: 3, baseVit: 8, baseDex: 5);
+        var stats = InventorySystem.ComputeDerivedStats(inv, Items, warrior!, baseStr: 10, baseInt: 3, baseVit: 8, baseDex: 5, level: 1);
 
         Assert.Equal(warrior!.BaseHp, stats.HpMax);
     }

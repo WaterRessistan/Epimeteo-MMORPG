@@ -18,6 +18,18 @@ namespace Epimeteo.Client.World;
 /// </summary>
 public static class ClientContent
 {
+    /// <summary>
+    /// Raíz de <c>content/</c>, para catálogos que el cliente carga enteros (<c>SkillCatalog</c>,
+    /// Fase 10 — la barra de habilidades necesita saber nivel/maná/cooldown de cada una). Mismo
+    /// criterio de búsqueda que <see cref="FindMapPath"/>: primero empaquetado, si no, subiendo
+    /// hasta <c>Epimeteo.sln</c>.
+    /// </summary>
+    public static string? ResolveContentRoot()
+    {
+        var packaged = ProjectSettings.GlobalizePath("res://content");
+        return Directory.Exists(packaged) ? packaged : FindRepositoryContentRoot();
+    }
+
     /// <summary>Ruta absoluta del JSON de un mapa, o <c>null</c> si no se encuentra.</summary>
     public static string? FindMapPath(string mapKey)
     {

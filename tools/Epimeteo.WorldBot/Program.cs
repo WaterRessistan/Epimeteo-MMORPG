@@ -66,6 +66,22 @@ internal static class Program
             return await PvpPhase(url, map, lagMs);
         }
 
+        // Flujo de progresión de la Fase 10 (FASE-10-progresion.md §9): a diferencia de
+        // tiendas/granja, el nivel y la XP los produce el propio protocolo matando monstruos de
+        // verdad, sin manipular nada por SQL — la única manipulación externa entre las dos
+        // corridas es un reinicio real del servicio, para probar que sobrevive de verdad.
+        if (args.Contains("--progression-grind"))
+        {
+            return await ProgressionGrindPhase(url, map);
+        }
+
+        if (args.Contains("--progression-verify"))
+        {
+            var username = Arg(args, "--progression-verify")
+                ?? throw new InvalidOperationException("--progression-verify necesita el username de --progression-grind.");
+            return await ProgressionVerifyPhase(url, map, username);
+        }
+
         var run = Guid.NewGuid().ToString("N")[..6];
 
         Console.WriteLine($"Servidor : {url}");
@@ -661,6 +677,413 @@ internal static class Program
         {
             await a.DisposeAsync();
             await b.DisposeAsync();
+        }
+    }
+
+    // Números de class.warrior (content/classes/warrior.json), para comprobar de verdad que el
+    // máximo escala con la fórmula de la Fase 10 (D3) y no un número cualquiera.
+    private const int WarriorBaseHp = 120;
+    private const int WarriorHpPerLevel = 14;
+    private const int WarriorBaseMp = 20;
+    private const int WarriorMpPerLevel = 3;
+    private const int WarriorBaseVit = 6;
+
+    /// <summary>
+    /// Fase 1 del flujo de progresión (FASE-10-progresion.md §9): una habilidad bloqueada por
+    /// nivel se rechaza, una desbloqueada gasta maná de verdad y tiene su propio cooldown (sin
+    /// bloquear el ataque básico, D7), matar monstruos sube de nivel de verdad y reparte los
+    /// puntos que tocan. Termina imprimiendo el <c>username</c> para <see cref="ProgressionVerifyPhase"/>,
+    /// que comprueba que todo sobrevive a un reinicio real del servicio.
+    /// <code>dotnet run --project tools/Epimeteo.WorldBot -- --progression-grind [url]</code>
+    /// </summary>
+    private static async Task<int> ProgressionGrindPhase(string url, GameMap map)
+    {
+        var puertaSur = new Vec2(48.5f, 50.5f);
+        var puertaNorte = new Vec2(48.5f, 46.5f);
+        var campo = new Vec2(48.5f, 44.5f);
+
+        var run = Guid.NewGuid().ToString("N")[..8];
+        var bot = new Bot(url, $"prog_{run}", $"Prog_{run}", map, lagMs: 0);
+        var flota = new List<Bot> { bot };
+
+        try
+        {
+            Console.WriteLine("· Fase 1: subir de nivel, repartir puntos y lanzar una habilidad");
+            await bot.ConnectAsync(register: true);
+            await Run(flota, 500);
+
+            Check($"Empieza en nivel 1 sin experiencia ni puntos (Nv {bot.Level}, XP {bot.Xp}, pts {bot.StatPoints})",
+                bot.Level == 1 && bot.Xp == 0 && bot.StatPoints == 0);
+
+            // ── 1. Habilidad de otro nivel: se rechaza sin tocar nada ─────
+            bot.SystemMessages.Clear();
+            bot.SendNow(Opcode.SkillCast, new C2SSkillCast { SkillKey = "skill.warrior_cleave", TargetEntityId = 0 });
+            await Run(flota, 500);
+            Check("skill.warrior_cleave (nivel 4) con nivel 1 → SkillNotUnlocked",
+                bot.SystemMessages.Any(m => m.Key == "combat.SkillNotUnlocked"));
+
+            // ── 2. Cruzar al campo: hay monstruos de sobra para probar la habilidad ─
+            await Rutas(flota, (bot, [puertaSur, puertaNorte, campo]));
+            await Run(flota, 1500);
+            Check("Hay un monstruo cerca para probar la habilidad", NearestMonster(bot) is not null);
+
+            // ── 3. Golpe Poderoso: daño de verdad, cooldown propio, maná real ──
+            // El objetivo vivo más cercano puede morir o perderse de vista entre un intento y el
+            // siguiente (el campo tiene varios monstruos moviéndose y pegando de vuelta) — por eso
+            // cada intento vuelve a elegir el más cercano en vez de aferrarse a uno fijo.
+            // OnCooldown y NotEnoughMana los decide SkillSystem.ValidateCast antes incluso de
+            // mirar el objetivo (nivel → maná → cooldown, y sólo entonces alcance/zona), así que
+            // esas dos comprobaciones se mandan con objetivo 0 a propósito: no dependen de que
+            // nada siga vivo. Entre medias se sigue atacando (cooldown propio, D7) en vez de
+            // esperar de brazos cruzados encajando golpes gratis.
+            var primerGolpe = false;
+            for (var intento = 0; intento < 6 && !primerGolpe; intento++)
+            {
+                primerGolpe = await CastSkillOnNearest(flota, bot, "skill.warrior_power_strike");
+                if (!primerGolpe)
+                {
+                    await Run(flota, 500);
+                }
+            }
+
+            Check("Golpe Poderoso hace daño de verdad", primerGolpe);
+
+            bot.SystemMessages.Clear();
+            bot.SendNow(Opcode.SkillCast, new C2SSkillCast { SkillKey = "skill.warrior_power_strike", TargetEntityId = 0 });
+            await Run(flota, 300);
+            Check("Repetir enseguida → OnCooldown (cooldown propio, no el de Attack)",
+                bot.SystemMessages.Any(m => m.Key == "combat.OnCooldown"));
+
+            var cercanoParaAtacar = NearestMonster(bot);
+            bot.CombatEvents.Clear();
+            if (cercanoParaAtacar is not null)
+            {
+                bot.SendNow(Opcode.Attack, new C2SAttack { TargetEntityId = cercanoParaAtacar.Id });
+            }
+
+            await Run(flota, 800);
+            Check("...pero el ataque básico entra igual: no comparten cooldown",
+                bot.CombatEvents.Any(e => e.SkillKey is null));
+
+            await AttackWhileWaitingNearest(flota, bot, 3300); // se cumple el cooldown de la habilidad (3000 ms) sin quedarse quieto
+
+            var segundoGolpe = false;
+            for (var intento = 0; intento < 6 && !segundoGolpe; intento++)
+            {
+                segundoGolpe = await CastSkillOnNearest(flota, bot, "skill.warrior_power_strike");
+                if (!segundoGolpe)
+                {
+                    await Run(flota, 500);
+                }
+            }
+
+            Check("Segundo Golpe Poderoso, ya sin cooldown, vuelve a entrar", segundoGolpe);
+
+            // A partir de aquí no hace falta saber la aritmética exacta del maná (algún intento de
+            // arriba pudo fallar por posición sin llegar a gastarlo — eso lo fija con estado
+            // controlado SkillSystemTests): se sigue lanzando, esperando el cooldown entre medias,
+            // hasta ver de verdad el rechazo por maná.
+            var sinMana = false;
+            for (var intento = 0; intento < 6 && !sinMana; intento++)
+            {
+                await AttackWhileWaitingNearest(flota, bot, 3300);
+                bot.SystemMessages.Clear();
+                var exito = await CastSkillOnNearest(flota, bot, "skill.warrior_power_strike");
+                sinMana = !exito && bot.SystemMessages.Any(m => m.Key == "combat.NotEnoughMana");
+            }
+
+            Check("Lanzarla lo bastante seguido acaba topando con el maná (NotEnoughMana)", sinMana);
+
+            // ── 4. Subir de nivel matando de verdad, sin tocar SQL ────────
+            // Los lobos del campo están lejos de los limos (map.village.json §spawns): el
+            // objetivo de la prueba de arriba se eligió por vida de sobra, no por cercanía a un
+            // punto de reaparición denso. Para el grind de verdad conviene plantarse junto a un
+            // punto de limos (respawn cada 30 s, dos a la vez) en vez de perseguir lo que ya se
+            // conocía del lobo.
+            //
+            // Entre los dos hay un muro de un tile (x = 56, y = 18-29: map.village.json,
+            // collision) que separa la zona de los lobos de la de los limos, sin hueco visible en
+            // ese tramo — el caminante ingenuo se queda pegado a él si se manda en línea recta
+            // desde donde haya acabado la prueba de la habilidad. Volver a pasar por la entrada
+            // del campo (x = 48,5, ya al oeste del muro) evita el problema sin tener que buscarle
+            // el hueco.
+            var puntoDeCaza = new Vec2(20.5f, 20.5f);
+            var rutaDesdeElPueblo = new[] { puertaSur, puertaNorte, puntoDeCaza };
+            await Rutas(flota, 25_000, (bot, [campo, puntoDeCaza]));
+            await Run(flota, 1500); // deja que el área de interés traiga los limos de ese punto
+            await GrindForLevelUp(flota, bot, rutaDesdeElPueblo, maxKills: 60);
+            Check($"Sube de nivel de verdad matando monstruos (Nv {bot.Level}, XP {bot.Xp})", bot.Level >= 2);
+            if (bot.Level < 2)
+            {
+                return Summarize();
+            }
+
+            Check("El XpUpdate de la subida trae LeveledUp", bot.XpUpdates.Any(u => u.LeveledUp));
+
+            var hpMaxEsperado = WarriorBaseHp + (WarriorHpPerLevel * (bot.Level - 1));
+            var mpMaxEsperado = WarriorBaseMp + (WarriorMpPerLevel * (bot.Level - 1));
+            var (hpTrasSubir, hpMaxTrasSubir) = bot.EntityHp.GetValueOrDefault(bot.MyEntityId);
+            Check($"El HP máximo escala con el nivel ({hpMaxTrasSubir} == {hpMaxEsperado})", hpMaxTrasSubir == hpMaxEsperado);
+            // Límite honesto (mismo criterio que FASE-09 §11): LevelingSystem.GrantXp cura del
+            // todo en el mismo tick que sube de nivel —eso lo fija exacto LevelingSystemTests, con
+            // estado controlado—, pero aquí sigue habiendo un campo lleno de monstruos que pueden
+            // aterrizar un golpe en los ticks que tarda este mensaje en volver. Un margen del 10 %
+            // separa "curó del todo y luego le pegaron" de "no curó".
+            Check($"Subir de nivel cura del todo (HP {hpTrasSubir}/{hpMaxTrasSubir}, margen 10 % por combate de fondo)",
+                hpTrasSubir >= hpMaxTrasSubir * 0.9);
+            Check($"El MP máximo también escala ({bot.MpMax} == {mpMaxEsperado})", bot.MpMax == mpMaxEsperado);
+            Check($"Concede los puntos de stat de la fase ({bot.StatPoints} pts)",
+                bot.StatPoints == ProgressionConstants.StatPointsPerLevel);
+
+            // ── 5. Repartir los puntos: sube el stat, baja lo que queda ───
+            var vitAntes = bot.LastEquipmentUpdate?.VitEffective ?? WarriorBaseVit;
+            var puntosIniciales = bot.StatPoints;
+
+            for (var i = 0; i < puntosIniciales; i++)
+            {
+                var vitPrevia = bot.LastEquipmentUpdate?.VitEffective ?? WarriorBaseVit;
+                var puntosPrevios = bot.StatPoints;
+                bot.SendNow(Opcode.AllocateStatPoint, new C2SAllocateStatPoint { Stat = StatKind.Vit });
+                await Run(flota, 400);
+
+                Check($"Punto {i + 1}: VIT sube de {vitPrevia} a {bot.LastEquipmentUpdate?.VitEffective}",
+                    bot.LastEquipmentUpdate?.VitEffective == vitPrevia + 1);
+                Check($"Punto {i + 1}: quedan {bot.StatPoints} sin gastar (de {puntosPrevios})",
+                    bot.StatPoints == puntosPrevios - 1);
+            }
+
+            Check($"Los {puntosIniciales} puntos de la subida fueron a VIT ({vitAntes} → {bot.LastEquipmentUpdate?.VitEffective})",
+                bot.LastEquipmentUpdate?.VitEffective == vitAntes + puntosIniciales);
+            Check("Sin puntos que quedaran, se acaban gastando todos", bot.StatPoints == 0);
+
+            bot.SystemMessages.Clear();
+            bot.SendNow(Opcode.AllocateStatPoint, new C2SAllocateStatPoint { Stat = StatKind.Str });
+            await Run(flota, 400);
+            Check("Sin puntos sin gastar, repartir uno más se rechaza",
+                bot.SystemMessages.Any(m => m.Key == "progression.NoStatPointsAvailable") && bot.StatPoints == 0);
+
+            Console.WriteLine($"\nusername={bot.Username}");
+            Console.WriteLine($"characterId={bot.CharacterId}");
+            Console.WriteLine(
+                "\nPara comprobar que nivel, XP, stats y maná sobreviven de verdad (no sólo al\n" +
+                "vaciado de la cola de guardado): reinicia el servicio y reconecta con el mismo\n" +
+                "personaje.\n" +
+                "  sudo systemctl restart epimeteo\n" +
+                $"  dotnet run --project tools/Epimeteo.WorldBot -- --progression-verify {bot.Username}\n");
+
+            return Summarize();
+        }
+        finally
+        {
+            await bot.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Fase 2 del flujo de progresión: reconecta con el personaje de <see cref="ProgressionGrindPhase"/>
+    /// tras un reinicio real del servicio y comprueba que nivel, XP, stats base y maná sobrevivieron
+    /// — el criterio de aceptación de FASE-10-progresion.md §10.5.
+    /// <code>dotnet run --project tools/Epimeteo.WorldBot -- --progression-verify &lt;username&gt; [url]</code>
+    /// </summary>
+    private static async Task<int> ProgressionVerifyPhase(string url, GameMap map, string username)
+    {
+        var bot = new Bot(url, username, "no-hace-falta", map, lagMs: 0);
+
+        try
+        {
+            Console.WriteLine("· Fase 2: nivel, stats y maná tras el reinicio");
+            await bot.ConnectAsync(register: false);
+            await Run([bot], 500);
+
+            var enter = bot.WorldEnter ?? throw new InvalidOperationException($"{username}: sin WorldEnter.");
+
+            Check($"El nivel sobrevive al reinicio (Nv {enter.Stats.Level})", enter.Stats.Level >= 2);
+
+            var hpMaxEsperado = WarriorBaseHp + (WarriorHpPerLevel * (enter.Stats.Level - 1));
+            var mpMaxEsperado = WarriorBaseMp + (WarriorMpPerLevel * (enter.Stats.Level - 1));
+            Check($"El maná máximo del nivel persistido cuadra ({bot.MpMax} == {mpMaxEsperado})", bot.MpMax == mpMaxEsperado);
+            Check($"El maná guardado llegó lleno ({enter.Stats.Mp}/{mpMaxEsperado})", enter.Stats.Mp == mpMaxEsperado);
+            // El maná se puede afirmar lleno porque nada lo gasta entre la subida y la
+            // desconexión (repartir puntos no cuesta maná). El HP no: el campo seguía lleno de
+            // monstruos mientras se repartían los puntos, así que sólo se afirma que sobrevivió
+            // con un valor sano — el "cura del todo" exacto ya lo prueba LevelingSystemTests con
+            // estado controlado (mismo límite honesto que el HP recién curado, más arriba).
+            Check($"El HP guardado sobrevivió con un valor sano ({enter.Stats.Hp}/{hpMaxEsperado})",
+                enter.Stats.Hp > 0 && enter.Stats.Hp <= hpMaxEsperado);
+
+            Check($"Los puntos de stat se gastaron todos y siguen en 0 tras el reinicio ({enter.Stats.StatPoints})",
+                enter.Stats.StatPoints == 0);
+            Check($"VIT quedó en {WarriorBaseVit + ProgressionConstants.StatPointsPerLevel} " +
+                $"(base {WarriorBaseVit} + los {ProgressionConstants.StatPointsPerLevel} puntos de la fase 1, VIT real {enter.Stats.Vit})",
+                enter.Stats.Vit == WarriorBaseVit + ProgressionConstants.StatPointsPerLevel);
+            Check($"La XP sigue por debajo del siguiente nivel, sin negativos (XP {enter.Stats.Xp})",
+                enter.Stats.Xp >= 0 && enter.Stats.Xp < LevelingFormulas.XpRequiredForNextLevel(enter.Stats.Level));
+
+            return Summarize();
+        }
+        finally
+        {
+            await bot.DisposeAsync();
+        }
+    }
+
+    /// <summary>La posición más fresca conocida de una entidad: la del último <c>Snapshot</c> si ha llegado alguno, si no la del <c>EntitySpawn</c>.</summary>
+    private static Vec2 LivePos(Bot bot, EntitySpawnInfo entity) =>
+        bot.LivePositions.GetValueOrDefault(entity.Id, new Vec2(entity.X, entity.Y));
+
+    /// <summary>El monstruo vivo conocido más cercano al bot, o <c>null</c> si no hay ninguno a la vista.</summary>
+    private static EntitySpawnInfo? NearestMonster(Bot bot) =>
+        bot.KnownEntities.Values
+            .Where(e => e.Type == EntityType.Monster)
+            .OrderBy(e => Vec2.DistanceSquared(bot.ServerPos, LivePos(bot, e)))
+            .FirstOrDefault();
+
+    /// <summary>
+    /// Se acerca a un monstruo que puede seguir moviéndose mientras se acerca (patrulla o
+    /// persigue al bot): en vez de una única caminata larga a un punto fijo —que un
+    /// <c>KnownEntities</c> desactualizado dejaría apuntando a donde estaba al aparecer, no a
+    /// donde está ahora (Fase 10)—, va en tramos cortos apuntando cada vez a la posición más
+    /// fresca conocida (<see cref="LivePos"/>), hasta entrar en rango o agotar el tiempo.
+    /// </summary>
+    private static async Task ApproachMonster(List<Bot> flota, Bot bot, int monsterId, float rangeTiles, int timeoutMs)
+    {
+        for (var restante = timeoutMs; restante > 0; restante -= 1500)
+        {
+            if (!bot.KnownEntities.TryGetValue(monsterId, out var monster))
+            {
+                return;
+            }
+
+            var pos = LivePos(bot, monster);
+            if (Vec2.DistanceSquared(bot.ServerPos, pos) <= rangeTiles * rangeTiles)
+            {
+                return;
+            }
+
+            bot.WalkTarget = pos;
+            await Run(flota, 1500);
+        }
+    }
+
+    /// <summary>
+    /// Se acerca al monstruo vivo más cercano y le lanza la habilidad. Vuelve a mirar cuál es el
+    /// más cercano justo antes de acercarse y de lanzar (no el capturado al principio): en un
+    /// campo con varios monstruos moviéndose y pegando de vuelta, el que estaba más cerca hace un
+    /// momento puede haber muerto o alejado. Devuelve si el <c>CombatEvent</c> de la habilidad
+    /// llegó de verdad.
+    /// </summary>
+    private static async Task<bool> CastSkillOnNearest(List<Bot> flota, Bot bot, string skillKey)
+    {
+        var monster = NearestMonster(bot);
+        if (monster is null)
+        {
+            return false;
+        }
+
+        await ApproachMonster(flota, bot, monster.Id, CombatConstants.MeleeRangeTiles, 15_000);
+
+        bot.CombatEvents.Clear();
+        bot.SendNow(Opcode.SkillCast, new C2SSkillCast { SkillKey = skillKey, TargetEntityId = monster.Id });
+        await Run(flota, 500);
+        return bot.CombatEvents.Any(e => e.SkillKey == skillKey);
+    }
+
+    /// <summary>
+    /// Manda ataques básicos al monstruo más cercano cada 900 ms durante la espera del cooldown de
+    /// una habilidad, en vez de quedarse quieto encajando golpes gratis: el ataque básico no
+    /// comparte cooldown con la habilidad (D7), así que no cuesta nada seguir pegando mientras se
+    /// cumple — y de paso evita acabar muerto por quedarse parado.
+    /// </summary>
+    private static async Task AttackWhileWaitingNearest(List<Bot> flota, Bot bot, int ms)
+    {
+        for (var restante = ms; restante > 0; restante -= 900)
+        {
+            var monster = NearestMonster(bot);
+            if (monster is not null)
+            {
+                bot.SendNow(Opcode.Attack, new C2SAttack { TargetEntityId = monster.Id });
+            }
+
+            await Run(flota, 900);
+        }
+    }
+
+    /// <summary>
+    /// Ataca al monstruo vivo más cercano una y otra vez, cambiando de objetivo cuando hace falta,
+    /// hasta que el nivel sube de verdad o se agota el número de muertes permitidas. Sin manipular
+    /// nada por SQL: la XP y el nivel los produce el protocolo real (FASE-10-progresion.md §9).
+    /// <para>
+    /// Morir contra un monstruo no cuesta XP (a diferencia del PvP, FASE-09 §2 D3) y reaparece de
+    /// inmediato en el pueblo (<c>Respawn</c> no tiene retardo) — así que si el bot muere a manos
+    /// de algo que le ganó el intercambio, lo único que hace falta es volver al punto de caza y
+    /// seguir, no abortar la corrida entera.
+    /// </para>
+    /// </summary>
+    private static async Task GrindForLevelUp(List<Bot> flota, Bot bot, Vec2[] returnRoute, int maxKills)
+    {
+        var startLevel = bot.Level;
+
+        // Alguno de los "más cercanos por distancia recta" puede estar al otro lado del muro
+        // interno del campo (x = 56, y = 18-29 — el mismo que separa a los lobos de los limos) y
+        // no ser alcanzable nunca sin rodear. Sin lista negra, NearestMonster lo volvería a elegir
+        // en cuanto se soltara, y el grind se quedaría girando sobre el mismo imposible para
+        // siempre en vez de darle una oportunidad a otro.
+        var inalcanzables = new HashSet<int>();
+
+        for (var kill = 0; kill < maxKills && bot.Level == startLevel; kill++)
+        {
+            var (hpAhora, hpMaxAhora) = bot.EntityHp.GetValueOrDefault(bot.MyEntityId);
+            Console.WriteLine($"  … [{kill}] Nv {bot.Level} XP {bot.Xp} HP {hpAhora}/{hpMaxAhora} en {bot.ServerPos.X:F1},{bot.ServerPos.Y:F1}");
+
+            if (bot.Deaths.Any(d => d.Id == bot.MyEntityId))
+            {
+                // Reaparece en el pueblo, al otro lado de la muralla: hace falta volver a pasar
+                // por la puerta (un solo tile, FASE-09 §9), no ir en línea recta al punto de caza.
+                Console.WriteLine("  … el bot murió a manos de un monstruo; vuelve al punto de caza tras reaparecer");
+                bot.Deaths.RemoveAll(d => d.Id == bot.MyEntityId);
+                await Run(flota, 1000); // deja que el Respawn (instantáneo en el servidor) llegue por snapshot
+                await Rutas(flota, 25_000, (bot, returnRoute));
+                continue;
+            }
+
+            var monster = bot.KnownEntities.Values
+                .Where(e => e.Type == EntityType.Monster && !inalcanzables.Contains(e.Id))
+                .OrderBy(e => Vec2.DistanceSquared(bot.ServerPos, LivePos(bot, e)))
+                .FirstOrDefault();
+
+            if (monster is null)
+            {
+                Console.WriteLine($"  … sin monstruos alcanzables a la vista (conocidos {bot.KnownEntities.Count}, en lista negra {inalcanzables.Count})");
+                // Nada vivo a la vista ahora mismo: esperar a que un respawn lo vuelva a anunciar,
+                // y darle otra oportunidad a los que se descartaron —a lo mejor ya no aplica, p.
+                // ej. porque el bot se ha movido a otra parte del campo tras reaparecer.
+                inalcanzables.Clear();
+                await Run(flota, 3000);
+                continue;
+            }
+
+            await ApproachMonster(flota, bot, monster.Id, CombatConstants.MeleeRangeTiles, 20_000);
+
+            // Si tras el acercamiento sigue fuera de rango, es que patrulla más rápido de lo que
+            // se le persigue o está al otro lado de un muro: mejor descartarlo que insistir 40
+            // ataques (36 s) contra alguien al que nunca se llega.
+            if (!bot.KnownEntities.TryGetValue(monster.Id, out var stillThere) ||
+                Vec2.DistanceSquared(bot.ServerPos, LivePos(bot, stillThere)) > CombatConstants.MeleeRangeTiles * CombatConstants.MeleeRangeTiles)
+            {
+                inalcanzables.Add(monster.Id);
+                continue;
+            }
+
+            bot.SystemMessages.Clear();
+            for (var golpe = 0; golpe < 40 && bot.KnownEntities.ContainsKey(monster.Id) &&
+                bot.Level == startLevel && !bot.Deaths.Any(d => d.Id == bot.MyEntityId); golpe++)
+            {
+                bot.SendNow(Opcode.Attack, new C2SAttack { TargetEntityId = monster.Id });
+                await Run(flota, 900);
+            }
+
+            Console.WriteLine($"  … tras el combate: {(bot.KnownEntities.ContainsKey(monster.Id) ? "sigue vivo" : "muerto/despawn")}, " +
+                $"XP {bot.Xp}, último aviso: {bot.SystemMessages.LastOrDefault()?.Key ?? "ninguno"}");
         }
     }
 

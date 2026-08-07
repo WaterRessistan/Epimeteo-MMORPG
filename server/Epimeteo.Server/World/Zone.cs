@@ -182,6 +182,7 @@ public sealed class Zone
             Gold = request.Gold,
             Level = request.Level,
             Xp = request.Xp,
+            StatPoints = request.StatPoints,
         };
 
         player.Cell = _grid.CellOf(position);

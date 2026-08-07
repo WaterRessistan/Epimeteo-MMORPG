@@ -1,0 +1,11 @@
+{
+  "key": "skill.mage_frost_lance",
+  "displayName": "Lanza de Hielo",
+  "classKey": "class.mage",
+  "requiredLevel": 4,
+  "manaCost": 18,
+  "cooldownMs": 5000,
+  "kind": "Damage",
+  "power": 22,
+  "rangeTiles": 6.0
+}

@@ -63,6 +63,7 @@ try
     builder.Services.AddSingleton(shopCatalog);
     builder.Services.AddSingleton(new CropCatalog(contentRoot));
     builder.Services.AddSingleton(new MonsterCatalog(contentRoot));
+    builder.Services.AddSingleton(new SkillCatalog(contentRoot));
     builder.Services.AddSingleton<CharacterRepository>();
     builder.Services.AddSingleton<CharacterService>();
     builder.Services.AddSingleton<ItemRepository>();

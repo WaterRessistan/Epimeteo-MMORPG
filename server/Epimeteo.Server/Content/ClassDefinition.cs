@@ -17,6 +17,15 @@ public sealed record ClassDefinition
     public required int BaseMp { get; init; }
 
     /// <summary>
+    /// Vida máxima adicional por cada nivel por encima de 1 (Fase 10): hasta ahora
+    /// <c>BaseHp</c>/<c>BaseMp</c> eran fijos para toda la vida del personaje, algo que sólo daba
+    /// igual porque nada subía de nivel todavía.
+    /// </summary>
+    public int HpPerLevel { get; init; }
+
+    public int MpPerLevel { get; init; }
+
+    /// <summary>
     /// Kit inicial (FASE-06 §2 D6): sin tiendas ni loot todavía, es la única forma de que un
     /// personaje recién creado tenga algo que mover o equipar. <c>CharacterService</c> lo inserta
     /// en la misma operación que crea la fila de <c>characters</c>.

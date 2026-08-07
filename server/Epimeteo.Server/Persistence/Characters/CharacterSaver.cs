@@ -75,7 +75,8 @@ public sealed class CharacterSaver : ICharacterSink, IHostedService
                     await _characters
                         .UpdateCharacterStateAsync(
                             save.CharacterId, save.MapKey, save.X, save.Y, (int)save.Facing,
-                            save.Gold, save.Hp, save.Mp, save.Xp, save.Level, token)
+                            save.Gold, save.Hp, save.Mp, save.Xp, save.Level,
+                            save.StatStr, save.StatInt, save.StatVit, save.StatDex, save.StatPoints, token)
                         .ConfigureAwait(false);
                     written++;
                 }

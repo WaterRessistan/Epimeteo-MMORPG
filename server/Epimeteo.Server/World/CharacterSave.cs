@@ -26,7 +26,16 @@ namespace Epimeteo.Server.World;
 /// <param name="Hp">Vida actual.</param>
 /// <param name="Mp">Maná actual.</param>
 /// <param name="Xp">Experiencia acumulada.</param>
-/// <param name="Level">Nivel. No sube en la Fase 9 (la curva es la Fase 10), pero viaja ya.</param>
+/// <param name="Level">Nivel.</param>
+/// <param name="StatStr">Fuerza base (sin equipo).</param>
+/// <param name="StatInt">Inteligencia base.</param>
+/// <param name="StatVit">Vitalidad base.</param>
+/// <param name="StatDex">Destreza base.</param>
+/// <param name="StatPoints">
+/// Puntos de stat sin gastar (Fase 10). Hueco real cerrado de paso: estas cinco columnas existen
+/// desde la Fase 2, se leían en <c>CharSelect</c> y nadie las escribía — mismo hueco que
+/// <c>hp/mp/xp/level</c> en la Fase 9 (D12 de aquella fase), esta vez para los stats base.
+/// </param>
 public readonly record struct CharacterSave(
     long CharacterId,
     string MapKey,
@@ -37,4 +46,9 @@ public readonly record struct CharacterSave(
     int Hp,
     int Mp,
     long Xp,
-    int Level);
+    int Level,
+    int StatStr,
+    int StatInt,
+    int StatVit,
+    int StatDex,
+    int StatPoints);

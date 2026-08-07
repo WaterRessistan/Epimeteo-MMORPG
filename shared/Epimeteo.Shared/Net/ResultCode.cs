@@ -60,4 +60,14 @@ public enum ResultCode : ushort
     TargetInSafeZone = 607,
     InCombat = 608,
     LevelDifferenceTooHigh = 609,
+
+    /// <summary>
+    /// Hueco real cerrado en la Fase 10: 600–609 no cubría "no quedan puntos de stat que gastar"
+    /// (mismo criterio que <c>WrongTool</c> en la Fase 8 — siguiente valor libre del bloque ya
+    /// reservado).
+    /// </summary>
+    NoStatPointsAvailable = 610,
+
+    /// <summary>La habilidad existe, pero el personaje todavía no llega al nivel que pide.</summary>
+    SkillNotUnlocked = 611,
 }

@@ -1,0 +1,11 @@
+{
+  "key": "skill.mage_arcane_burst",
+  "displayName": "Estallido Arcano",
+  "classKey": "class.mage",
+  "requiredLevel": 7,
+  "manaCost": 26,
+  "cooldownMs": 8000,
+  "kind": "Damage",
+  "power": 32,
+  "rangeTiles": 6.0
+}

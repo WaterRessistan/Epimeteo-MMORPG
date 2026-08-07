@@ -32,4 +32,12 @@ public sealed record S2CEquipmentUpdate
 
     [Key(6)]
     public required int DexEffective { get; init; }
+
+    /// <summary>
+    /// Puntos de stat sin gastar (Fase 10). Viaja aquí, no en un mensaje aparte, porque es el
+    /// mismo momento en que cambian los stats efectivos: al entrar al mundo, tras equipar/
+    /// desequipar y tras <c>AllocateStatPoint</c>.
+    /// </summary>
+    [Key(7)]
+    public required int StatPoints { get; init; }
 }

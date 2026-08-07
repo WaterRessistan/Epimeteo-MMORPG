@@ -27,6 +27,7 @@ public sealed class WorldTests
     private static readonly ShopCatalog Shops = new(ContentPaths.ResolveContentRoot());
     private static readonly CropCatalog Crops = new(ContentPaths.ResolveContentRoot());
     private static readonly MonsterCatalog Monsters = new(ContentPaths.ResolveContentRoot());
+    private static readonly SkillCatalog Skills = new(ContentPaths.ResolveContentRoot());
 
     private sealed class FakeSink : ICharacterSink
     {
@@ -73,7 +74,7 @@ public sealed class WorldTests
         var world = new GameWorld(
             maps, inbox, sink, Items, Classes, new FakeInventorySink(),
             Shops, shopRuntime, new FakeEconomySink(), Crops, farmRuntime, new FakeFarmSink(),
-            Monsters, new FakeCombatLogSink(), new EntityIdAllocator(), saveIntervalSeconds);
+            Monsters, Skills, new FakeCombatLogSink(), new EntityIdAllocator(), saveIntervalSeconds);
         return (world, inbox, sink);
     }
 
@@ -107,7 +108,8 @@ public sealed class WorldTests
         Items: [],
         Gold: gold,
         Level: 1,
-        Xp: 0);
+        Xp: 0,
+        StatPoints: 0);
 
     private static void PostInput(WorldInbox inbox, int sessionId, uint seq, int dirX, int dirY)
     {

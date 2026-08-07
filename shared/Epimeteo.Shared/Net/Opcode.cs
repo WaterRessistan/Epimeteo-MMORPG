@@ -62,6 +62,14 @@ public enum Opcode : ushort
     /// </summary>
     LootTake = 0x0062,
 
+    /// <summary>
+    /// Añadido en la Fase 10: el catálogo original no reservó nada para gastar puntos de stat
+    /// (hueco real, FASE-10-progresion.md §2 D5). Familia <see cref="OpcodeFamily.Character"/> —
+    /// mismo cupo que crear/borrar personaje, una acción de menú, no de combate— pero estado legal
+    /// <c>InWorld</c>: hace falta el personaje cargado para saber su clase y sus stats.
+    /// </summary>
+    AllocateStatPoint = 0x0063,
+
     ChatSend = 0x0070,
 
     // ── Servidor → cliente ───────────────────────────────────────────────

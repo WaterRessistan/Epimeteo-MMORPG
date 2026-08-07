@@ -106,6 +106,14 @@ internal sealed class Bot : IAsyncDisposable
     /// <summary>Todo lo que se ha visto aparecer, por id — para encontrar el NPC de una tienda por su DefKey (FASE-07 §9).</summary>
     public Dictionary<int, EntitySpawnInfo> KnownEntities { get; } = [];
 
+    /// <summary>
+    /// Última posición conocida de cada entidad, según los <c>Snapshot</c> (Fase 10): a diferencia
+    /// de <see cref="KnownEntities"/> (fija en la posición del <c>EntitySpawn</c>), esto se
+    /// actualiza en cada delta — hace falta para acercarse a un monstruo que patrulla o persigue,
+    /// no al sitio donde estaba cuando entró en el área de interés.
+    /// </summary>
+    public Dictionary<int, Vec2> LivePositions { get; } = [];
+
     /// <summary>Oro actual, según el último <c>CurrencyUpdate</c>.</summary>
     public long Gold { get; private set; }
 
@@ -135,6 +143,26 @@ internal sealed class Bot : IAsyncDisposable
 
     /// <summary>Experiencia actual, según el último <c>XpUpdate</c>.</summary>
     public long Xp { get; private set; }
+
+    /// <summary>Nivel actual, según <c>WorldEnter</c>/<c>XpUpdate</c>/<c>EntityStats</c> (Fase 10).</summary>
+    public int Level { get; private set; } = 1;
+
+    /// <summary>XP que falta para el siguiente nivel, según el último <c>XpUpdate</c> (Fase 10).</summary>
+    public long XpToNextLevel { get; private set; }
+
+    /// <summary>Puntos de stat sin gastar, según <c>WorldEnter</c>/<c>EquipmentUpdate</c> (Fase 10).</summary>
+    public int StatPoints { get; private set; }
+
+    /// <summary>Maná propio, según el último <c>EntityStats</c> de esta entidad (Fase 10).</summary>
+    public int Mp { get; private set; }
+
+    public int MpMax { get; private set; }
+
+    /// <summary>Último <c>EquipmentUpdate</c>: stats efectivos con equipo, para comprobar el reparto de puntos (Fase 10).</summary>
+    public S2CEquipmentUpdate? LastEquipmentUpdate { get; private set; }
+
+    /// <summary><c>XpUpdate</c> recibidos en la fase actual — hace falta la lista entera para ver <c>LeveledUp</c> (Fase 10).</summary>
+    public List<S2CXpUpdate> XpUpdates { get; } = [];
 
     /// <summary>Si está en combate PvP, según el último <c>CombatFlagUpdate</c>.</summary>
     public bool InCombat { get; private set; }
@@ -204,6 +232,10 @@ internal sealed class Bot : IAsyncDisposable
         MyEntityId = enter.MyEntityId;
         Gold = enter.Stats.Gold;
         Xp = enter.Stats.Xp;
+        Level = enter.Stats.Level;
+        StatPoints = enter.Stats.StatPoints;
+        Mp = enter.Stats.Mp;
+        MpMax = enter.Stats.Mp; // Se corrige con el primer EquipmentUpdate, que sí trae el máximo (FASE-06 §2 D5).
         EntityHp[enter.MyEntityId] = (enter.Stats.Hp, enter.Stats.Hp);
         ServerPos = new Vec2(enter.SpawnX, enter.SpawnY);
         Prediction = new ClientPrediction(_map.Collision, MoveState.AtRest(ServerPos, enter.Facing));
@@ -361,6 +393,7 @@ internal sealed class Bot : IAsyncDisposable
         SystemMessages.Clear();
         CombatEvents.Clear();
         Deaths.Clear();
+        XpUpdates.Clear();
 
         // Los sacos también: si no, quien busque "el saco que acabo de tirar" puede quedarse con
         // uno de otra fase, que además puede ser de otro jugador y tener sus derechos de saqueo.
@@ -388,6 +421,7 @@ internal sealed class Bot : IAsyncDisposable
                 foreach (var entity in spawn.Entities)
                 {
                     KnownEntities[entity.Id] = entity;
+                    LivePositions[entity.Id] = new Vec2(entity.X, entity.Y);
                 }
 
                 break;
@@ -421,6 +455,7 @@ internal sealed class Bot : IAsyncDisposable
                 {
                     KnownEntities.Remove(entity.Id);
                     LootBags.Remove(entity.Id);
+                    LivePositions.Remove(entity.Id);
                 }
 
                 break;
@@ -435,6 +470,19 @@ internal sealed class Bot : IAsyncDisposable
 
             case Opcode.EntityStats when FrameCodec.TryDecodePayload<S2CEntityStats>(frame, out var stats) && stats is not null:
                 EntityHp[stats.Id] = (stats.Hp, stats.HpMax);
+                if (stats.Id == MyEntityId)
+                {
+                    Mp = stats.Mp;
+                    MpMax = stats.MpMax;
+                    Level = stats.Level;
+                }
+
+                break;
+
+            case Opcode.EquipmentUpdate when FrameCodec.TryDecodePayload<S2CEquipmentUpdate>(frame, out var equip) && equip is not null:
+                LastEquipmentUpdate = equip;
+                StatPoints = equip.StatPoints;
+                MpMax = equip.MpMax;
                 break;
 
             case Opcode.CombatEvent when FrameCodec.TryDecodePayload<S2CCombatEvent>(frame, out var evt) && evt is not null:
@@ -451,6 +499,9 @@ internal sealed class Bot : IAsyncDisposable
 
             case Opcode.XpUpdate when FrameCodec.TryDecodePayload<S2CXpUpdate>(frame, out var xp) && xp is not null:
                 Xp = xp.Xp;
+                XpToNextLevel = xp.XpToNextLevel;
+                Level = xp.Level;
+                XpUpdates.Add(xp);
                 break;
 
             case Opcode.CombatFlagUpdate when FrameCodec.TryDecodePayload<S2CCombatFlagUpdate>(frame, out var flag) && flag is not null:
@@ -488,6 +539,15 @@ internal sealed class Bot : IAsyncDisposable
 
         Snapshots++;
         LastAckedSeq = snapshot.LastAckedInputSeq;
+
+        // Un delta sólo trae lo que cambió desde el último snapshot de este observador: una
+        // entidad quieta no aparece. Por eso esto guarda la posición de todo el mundo, no sólo la
+        // propia — si no, "dónde está ahora ese monstruo" se quedaría para siempre en la posición
+        // del EntitySpawn original en cuanto se moviera (Fase 10, grind de progresión).
+        foreach (var delta in snapshot.Entities)
+        {
+            LivePositions[delta.Id] = new Vec2(delta.X, delta.Y);
+        }
 
         var mine = snapshot.Entities.FirstOrDefault(entity => entity.Id == MyEntityId);
         if (mine is null || Prediction is null)

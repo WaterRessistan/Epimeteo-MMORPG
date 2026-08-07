@@ -174,7 +174,8 @@ public sealed class CharacterRepository(NpgsqlConnectionFactory connections, Ite
     /// </summary>
     public async Task<bool> UpdateCharacterStateAsync(
         long characterId, string mapKey, float posX, float posY, int facing, long gold,
-        int hp, int mp, long xp, int level, CancellationToken ct = default)
+        int hp, int mp, long xp, int level, int statStr, int statInt, int statVit, int statDex,
+        int statPoints, CancellationToken ct = default)
     {
         await using var connection = await connections.OpenAsync(ct).ConfigureAwait(false);
         var affected = await connection.ExecuteAsync(
@@ -190,10 +191,19 @@ public sealed class CharacterRepository(NpgsqlConnectionFactory connections, Ite
                        mp = @mp,
                        xp = @xp,
                        level = @level,
+                       stat_str = @statStr,
+                       stat_int = @statInt,
+                       stat_vit = @statVit,
+                       stat_dex = @statDex,
+                       stat_points = @statPoints,
                        last_played_at = now()
                  WHERE id = @characterId AND deleted_at IS NULL
                 """,
-                new { characterId, mapKey, posX, posY, facing = (short)facing, gold, hp, mp, xp, level },
+                new
+                {
+                    characterId, mapKey, posX, posY, facing = (short)facing, gold, hp, mp, xp, level,
+                    statStr, statInt, statVit, statDex, statPoints,
+                },
                 cancellationToken: ct)).ConfigureAwait(false);
 
         return affected > 0;

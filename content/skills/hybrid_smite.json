@@ -1,0 +1,11 @@
+{
+  "key": "skill.hybrid_smite",
+  "displayName": "Castigo",
+  "classKey": "class.hybrid",
+  "requiredLevel": 1,
+  "manaCost": 9,
+  "cooldownMs": 3000,
+  "kind": "Damage",
+  "power": 13,
+  "rangeTiles": 2.5
+}

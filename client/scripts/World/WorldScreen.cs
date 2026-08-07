@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Epimeteo.Client.Net;
 using Epimeteo.Client.Shop;
 using Epimeteo.Client.Ui;
@@ -39,11 +40,23 @@ public partial class WorldScreen : Node2D
     /// <summary>Reloj de interpolación. Vive en <c>Shared</c> y tiene sus propios tests.</summary>
     private readonly InterpolationClock _clock = new();
 
+    /// <summary>
+    /// Cooldown visual optimista por habilidad, en segundos restantes (FASE-10 §7): arranca al
+    /// <b>mandar</b> el cast, no al confirmarlo el servidor — igual que el resto de comprobaciones
+    /// de cliente en esta pantalla, es sólo cosmético; si el servidor lo rechaza no pasa nada peor
+    /// que dejar el botón gris un rato de más.
+    /// </summary>
+    private readonly Dictionary<string, double> _skillCooldowns = [];
+
+    private static readonly string[] SkillActionKeys = [InputActions.Skill1, InputActions.Skill2, InputActions.Skill3];
+
     private NetClient _net = null!;
     private WorldRenderer _renderer = null!;
     private WorldCamera _camera = null!;
     private WorldHud _hud = null!;
     private ShopScreen _shop = null!;
+
+    private SkillDefinition[] _classSkills = [];
 
     private LocalPlayer? _local;
     private int _myEntityId;
@@ -83,6 +96,17 @@ public partial class WorldScreen : Node2D
         {
             Fail($"Contenido desactualizado: el mapa del servidor es {enter.MapHash:X8} y el tuyo {map.Hash:X8}.");
             return;
+        }
+
+        // Sólo lo que puede lanzar la clase del personaje, y en el mismo orden que las teclas
+        // 1-3 le van a asignar: por nivel requerido, que es como está escrito el contenido
+        // (FASE-10 §7 — no hace falta un orden distinto).
+        var contentRoot = ClientContent.ResolveContentRoot();
+        var classKey = _net.SelectedCharacter?.ClassKey;
+        if (contentRoot is not null && classKey is not null)
+        {
+            var skills = new SkillCatalog(contentRoot);
+            _classSkills = [.. skills.ForClass(classKey).OrderBy(s => s.RequiredLevel)];
         }
 
         _myEntityId = enter.MyEntityId;
@@ -148,9 +172,79 @@ public partial class WorldScreen : Node2D
 
         _camera.FollowTile(_local.RenderPos);
         _renderer.QueueRedraw();
+        TickSkillCooldowns(delta);
         UpdateHud();
         HandleInteract();
         HandleAttack();
+        HandleSkillCast();
+    }
+
+    private void TickSkillCooldowns(double delta)
+    {
+        if (_skillCooldowns.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var key in _skillCooldowns.Keys.ToArray())
+        {
+            var remaining = _skillCooldowns[key] - delta;
+            if (remaining <= 0)
+            {
+                _skillCooldowns.Remove(key);
+            }
+            else
+            {
+                _skillCooldowns[key] = remaining;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Teclas 1-3: lanzan la habilidad de ese hueco. Curaciones se apuntan a uno mismo (D9); el
+    /// resto, al objetivo atacable más cercano — igual criterio que <see cref="HandleAttack"/>.
+    /// El nivel y el maná los comprueba también el servidor; aquí sólo se evita mandar algo que ya
+    /// se sabe que va a fallar (clase equivocada para el hueco, cooldown visual en marcha).
+    /// </summary>
+    private void HandleSkillCast()
+    {
+        if (_local is null)
+        {
+            return;
+        }
+
+        for (var i = 0; i < SkillActionKeys.Length && i < _classSkills.Length; i++)
+        {
+            if (!Input.IsActionJustPressed(SkillActionKeys[i]))
+            {
+                continue;
+            }
+
+            var skill = _classSkills[i];
+            if (_net.Level < skill.RequiredLevel || _skillCooldowns.ContainsKey(skill.Key))
+            {
+                continue;
+            }
+
+            int targetId;
+            if (skill.Kind == CombatEventKind.Heal)
+            {
+                targetId = _myEntityId;
+            }
+            else
+            {
+                var target = FindNearestTarget(_local.Current.Pos);
+                if (target is null)
+                {
+                    continue;
+                }
+
+                targetId = target.Id;
+            }
+
+            _net.SendSkillCast(skill.Key, targetId);
+            _skillCooldowns[skill.Key] = skill.CooldownMs / 1000.0;
+        }
     }
 
     /// <summary>
@@ -356,9 +450,12 @@ public partial class WorldScreen : Node2D
         _hud.SetCombat(
             _myHp,
             _myHpMax,
+            _net.Level,
             _net.Xp,
+            _net.XpToNextLevel,
             target is null ? "sin objetivo" : $"{target.Name} {target.Hp}/{target.HpMax}",
             _net.InCombat);
+        _hud.SetSkills(BuildSkillBarText());
 
         // Mientras no llegue el primer ZoneFlagsUpdate se enseña lo que el cliente deduce del
         // mapa; en cuanto el servidor habla, manda él.
@@ -371,6 +468,31 @@ public partial class WorldScreen : Node2D
         {
             _hud.SetRegion(_regionName, _regionFlags);
         }
+    }
+
+    /// <summary>Texto de la barra de habilidades del HUD: tecla, nombre, y cooldown si lo hay.</summary>
+    private string BuildSkillBarText()
+    {
+        if (_classSkills.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var parts = new string[Math.Min(_classSkills.Length, SkillActionKeys.Length)];
+        for (var i = 0; i < parts.Length; i++)
+        {
+            var skill = _classSkills[i];
+            var locked = _net.Level < skill.RequiredLevel;
+            var status = locked
+                ? $"Nv {skill.RequiredLevel}"
+                : _skillCooldowns.TryGetValue(skill.Key, out var remaining)
+                    ? $"{remaining:F1}s"
+                    : "listo";
+
+            parts[i] = $"[{i + 1}] {skill.DisplayName} ({status})";
+        }
+
+        return string.Join("  ·  ", parts);
     }
 
     private void Fail(string message)

@@ -53,6 +53,7 @@ public sealed class GameWorld
     private readonly FarmRuntime _farmRuntime;
     private readonly IFarmSink _farmSink;
     private readonly MonsterCatalog _monsters;
+    private readonly SkillCatalog _skills;
     private readonly ICombatLogSink _combatLogSink;
     private readonly EntityIdAllocator _entityIds;
     private readonly Dictionary<string, MonsterSpawner> _spawners = new(StringComparer.Ordinal);
@@ -74,6 +75,7 @@ public sealed class GameWorld
         FarmRuntime farmRuntime,
         IFarmSink farmSink,
         MonsterCatalog monsters,
+        SkillCatalog skills,
         ICombatLogSink combatLogSink,
         EntityIdAllocator entityIds,
         int saveIntervalSeconds = 30)
@@ -90,6 +92,7 @@ public sealed class GameWorld
         _farmRuntime = farmRuntime;
         _farmSink = farmSink;
         _monsters = monsters;
+        _skills = skills;
         _combatLogSink = combatLogSink;
         _entityIds = entityIds;
         _saveIntervalTicks = saveIntervalSeconds * SimulationConstants.TickRate;
@@ -363,6 +366,14 @@ public sealed class GameWorld
 
                 case Opcode.LootTake:
                     HandleLootTake(message, nowMs);
+                    break;
+
+                case Opcode.SkillCast:
+                    HandleSkillCast(message, nowMs);
+                    break;
+
+                case Opcode.AllocateStatPoint:
+                    HandleAllocateStatPoint(message);
                     break;
 
                 default:
@@ -1018,9 +1029,9 @@ public sealed class GameWorld
     }
 
     /// <summary>Aplica un golpe ya validado: daño, aviso a los testigos, amenaza y muerte si toca.</summary>
-    private void ResolveHit(Zone zone, WorldEntity attacker, WorldEntity target, long nowMs)
+    private void ResolveHit(Zone zone, WorldEntity attacker, WorldEntity target, long nowMs, int powerBonus = 0, string? skillKey = null)
     {
-        var hit = CombatSystem.ApplyHit(attacker, target, zone.Rng);
+        var hit = CombatSystem.ApplyHit(attacker, target, zone.Rng, powerBonus);
 
         BroadcastCombatEvent(zone, target, new S2CCombatEvent
         {
@@ -1029,6 +1040,7 @@ public sealed class GameWorld
             Kind = CombatEventKind.Damage,
             Amount = hit.Damage,
             Flags = hit.Critical ? CombatEventFlags.Critical : CombatEventFlags.None,
+            SkillKey = skillKey,
         });
 
         if (target is MonsterEntity monster)
@@ -1091,7 +1103,7 @@ public sealed class GameWorld
 
         if (winner is not null)
         {
-            GrantXp(winner, monster.Definition.XpReward);
+            GrantXp(zone, winner, monster.Definition.XpReward);
         }
 
         SpawnLootBag(zone, monster, winner, nowMs);
@@ -1111,7 +1123,7 @@ public sealed class GameWorld
         {
             var lost = (long)(victim.Xp * CombatConstants.PvpXpLossFraction);
             victim.Xp = Math.Max(0, victim.Xp - lost);
-            SendXpUpdate(victim);
+            SendXpUpdate(victim, leveledUp: false);
 
             _combatLogSink.Enqueue(new CombatLogSave(
                 victim.CharacterId,
@@ -1244,25 +1256,165 @@ public sealed class GameWorld
         }
     }
 
-    private void GrantXp(PlayerEntity player, long amount)
+    private void HandleSkillCast(in WorldMessage message, long nowMs)
+    {
+        if (!FrameCodec.TryDecodeBody<C2SSkillCast>(message.Payload, out var cast) || cast is null ||
+            string.IsNullOrEmpty(cast.SkillKey))
+        {
+            _log.Warning("SkillCast ilegible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (FindPlayerZone(message.SessionId) is not { } found)
+        {
+            return;
+        }
+
+        var (zone, player) = found;
+
+        if (player.IsDead)
+        {
+            SendCombatFailure(player, ResultCode.CannotAttackTarget);
+            return;
+        }
+
+        // Un cliente honesto sólo lanza habilidades de su propia clase, las que le mandó el
+        // contenido: pedir otra es un dato imposible con el protocolo cerrado, no una jugada que
+        // falla (mismo criterio que un EquipSlot no definido en la Fase 6).
+        if (!_skills.TryGet(cast.SkillKey, out var skill) || skill.ClassKey != player.DefKey)
+        {
+            _log.Warning("SkillCast con habilidad ajena o desconocida '{SkillKey}' en la sesión {SessionId}",
+                cast.SkillKey, message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        var verdict = SkillSystem.ValidateCast(player, skill, nowMs);
+        if (verdict != ResultCode.Ok)
+        {
+            SendCombatFailure(player, verdict);
+            return;
+        }
+
+        if (skill.Kind == CombatEventKind.Heal)
+        {
+            CastHeal(zone, player, skill, nowMs);
+            return;
+        }
+
+        if (!zone.Entities.TryGetValue(cast.TargetEntityId, out var target))
+        {
+            SendCombatFailure(player, ResultCode.TargetNotFound);
+            return;
+        }
+
+        // Alcance/zona/línea de visión, las mismas reglas que un ataque básico (FASE-09 §2 D3),
+        // sólo con el alcance de la habilidad; el cooldown ya se comprobó aparte (D7), así que
+        // aquí siempre se le dice que sí está listo.
+        var isPvp = target is PlayerEntity;
+        var zoneVerdict = CombatSystem.ValidateAttack(
+            player, target, target.State.Pos, zone.Map, skill.RangeTiles, isPvp, cooldownReady: true);
+
+        if (zoneVerdict != ResultCode.Ok)
+        {
+            SendCombatFailure(player, zoneVerdict);
+            return;
+        }
+
+        player.Mp -= skill.ManaCost;
+        player.SkillCooldowns[skill.Key] = nowMs + skill.CooldownMs;
+        player.VitalsDirty = true;
+
+        ResolveHit(zone, player, target, nowMs, skill.Power, skill.Key);
+    }
+
+    /// <summary>Una curación siempre se apunta a quien la lanza; el objetivo que mandó el cliente se ignora (FASE-10 §2 D9).</summary>
+    private void CastHeal(Zone zone, PlayerEntity caster, SkillDefinition skill, long nowMs)
+    {
+        caster.Mp -= skill.ManaCost;
+        caster.SkillCooldowns[skill.Key] = nowMs + skill.CooldownMs;
+
+        // Sin RNG (D8): a diferencia del daño, curar depende del contenido, no de la suerte.
+        var healed = Math.Min(skill.Power, caster.HpMax - caster.Hp);
+        caster.Hp += healed;
+        caster.VitalsDirty = true;
+
+        BroadcastCombatEvent(zone, caster, new S2CCombatEvent
+        {
+            AttackerId = caster.Id,
+            TargetId = caster.Id,
+            Kind = CombatEventKind.Heal,
+            Amount = healed,
+            Flags = CombatEventFlags.None,
+            SkillKey = skill.Key,
+        });
+
+        BroadcastEntityStats(zone, caster);
+    }
+
+    private void HandleAllocateStatPoint(in WorldMessage message)
+    {
+        if (!FrameCodec.TryDecodeBody<C2SAllocateStatPoint>(message.Payload, out var allocate) || allocate is null ||
+            !Enum.IsDefined(allocate.Stat))
+        {
+            _log.Warning("AllocateStatPoint ilegible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        var player = FindPlayer(message.SessionId);
+        if (player is null)
+        {
+            return;
+        }
+
+        var code = LevelingSystem.TryAllocateStatPoint(player, allocate.Stat);
+        if (code != ResultCode.Ok)
+        {
+            SendProgressionFailure(player, code);
+            return;
+        }
+
+        player.VitalsDirty = true;
+        SendEquipmentUpdate(player);
+    }
+
+    private static void SendProgressionFailure(PlayerEntity player, ResultCode code) => player.Peer.Send(
+        Opcode.SystemMessage, new S2CSystemMessage { Severity = 0, Key = $"progression.{code}", Args = [] });
+
+    /// <summary>
+    /// Concede XP y, si cruza de nivel, cura del todo y avisa a quien tenga al jugador en su área
+    /// de interés — el nivel viaja en <c>EntityStats</c> (FASE-10 §2 D2).
+    /// </summary>
+    private void GrantXp(Zone zone, PlayerEntity player, long amount)
     {
         if (amount <= 0)
         {
             return;
         }
 
-        player.Xp += amount;
+        var result = LevelingSystem.GrantXp(player, amount, _classes, _items);
         player.VitalsDirty = true;
-        SendXpUpdate(player);
+        SendXpUpdate(player, result.LeveledUp);
+
+        if (result.LeveledUp)
+        {
+            BroadcastEntityStats(zone, player);
+
+            // BroadcastEntityStats sólo lleva HP/MP/nivel (S2CEntityStats, Fase 9): sin esto el
+            // cliente nunca se entera de los puntos de stat que acaba de conceder la subida —
+            // StatPoints sólo viaja en EquipmentUpdate — hasta el próximo equipar/desequipar.
+            SendEquipmentUpdate(player);
+        }
     }
 
-    private static void SendXpUpdate(PlayerEntity player) => player.Peer.Send(Opcode.XpUpdate, new S2CXpUpdate
+    private static void SendXpUpdate(PlayerEntity player, bool leveledUp) => player.Peer.Send(Opcode.XpUpdate, new S2CXpUpdate
     {
         Xp = player.Xp,
-        // La curva de nivel es la Fase 10: aquí la XP se mueve pero nadie sube.
-        XpToNextLevel = 0,
+        XpToNextLevel = LevelingFormulas.XpRequiredForNextLevel(player.Level),
         Level = player.Level,
-        LeveledUp = false,
+        LeveledUp = leveledUp,
     });
 
     private static void FlagCombat(PlayerEntity player, long nowMs)
@@ -1710,7 +1862,7 @@ public sealed class GameWorld
         }
 
         var stats = InventorySystem.ComputeDerivedStats(
-            player.Inventory, _items, classDef, player.Str, player.IntStat, player.Vit, player.Dex);
+            player.Inventory, _items, classDef, player.Str, player.IntStat, player.Vit, player.Dex, player.Level);
 
         player.HpMax = stats.HpMax;
         player.MpMax = stats.MpMax;
@@ -1737,6 +1889,7 @@ public sealed class GameWorld
             IntEffective = stats.IntEffective,
             VitEffective = stats.VitEffective,
             DexEffective = stats.DexEffective,
+            StatPoints = player.StatPoints,
         });
     }
 
@@ -1805,7 +1958,12 @@ public sealed class GameWorld
             player.Hp,
             player.Mp,
             player.Xp,
-            player.Level));
+            player.Level,
+            player.Str,
+            player.IntStat,
+            player.Vit,
+            player.Dex,
+            player.StatPoints));
 
         player.PositionDirty = false;
         player.GoldDirty = false;

@@ -13,5 +13,7 @@
     { "defKey": "item.health_potion", "quantity": 1 },
     { "defKey": "item.wheat_seed", "quantity": 3 }
   ],
-  "startingGold": 100
+  "startingGold": 100,
+  "hpPerLevel": 9,
+  "mpPerLevel": 7
 }

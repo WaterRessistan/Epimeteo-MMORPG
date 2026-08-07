@@ -1,0 +1,11 @@
+{
+  "key": "skill.warrior_cleave",
+  "displayName": "Tajo",
+  "classKey": "class.warrior",
+  "requiredLevel": 4,
+  "manaCost": 15,
+  "cooldownMs": 6000,
+  "kind": "Damage",
+  "power": 20,
+  "rangeTiles": 1.5
+}

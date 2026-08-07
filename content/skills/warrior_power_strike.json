@@ -1,0 +1,11 @@
+{
+  "key": "skill.warrior_power_strike",
+  "displayName": "Golpe Poderoso",
+  "classKey": "class.warrior",
+  "requiredLevel": 1,
+  "manaCost": 8,
+  "cooldownMs": 3000,
+  "kind": "Damage",
+  "power": 12,
+  "rangeTiles": 1.5
+}

@@ -12,5 +12,7 @@
     { "defKey": "item.wooden_shield", "quantity": 1 },
     { "defKey": "item.health_potion", "quantity": 2 }
   ],
-  "startingGold": 100
+  "startingGold": 100,
+  "hpPerLevel": 14,
+  "mpPerLevel": 3
 }

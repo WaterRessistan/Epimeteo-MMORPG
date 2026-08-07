@@ -1,0 +1,11 @@
+{
+  "key": "skill.mage_firebolt",
+  "displayName": "Bola de Fuego",
+  "classKey": "class.mage",
+  "requiredLevel": 1,
+  "manaCost": 10,
+  "cooldownMs": 2500,
+  "kind": "Damage",
+  "power": 14,
+  "rangeTiles": 5.0
+}

@@ -160,6 +160,15 @@ public partial class NetClient : Node
     /// <summary>Experiencia actual, según el último <c>XpUpdate</c> (Fase 9).</summary>
     public long Xp { get; private set; }
 
+    /// <summary>XP que falta para el siguiente nivel, según el último <c>XpUpdate</c> (Fase 10).</summary>
+    public long XpToNextLevel { get; private set; }
+
+    /// <summary>Nivel actual.</summary>
+    public int Level { get; private set; } = 1;
+
+    /// <summary>Puntos de stat sin gastar, según el último <c>EquipmentUpdate</c> (Fase 10).</summary>
+    public int StatPoints { get; private set; }
+
     /// <summary>
     /// Si está en combate PvP. Sólo para pintar el aviso: quien impide de verdad el logout limpio
     /// es el servidor (FASE-09 §2 D11).
@@ -400,6 +409,17 @@ public partial class NetClient : Node
     public void SendLootTake(int lootEntityId, byte slot) =>
         Send(Opcode.LootTake, new C2SLootTake { LootEntityId = lootEntityId, Slot = slot });
 
+    /// <summary>
+    /// Lanzar una habilidad (Fase 10). En una curación el servidor ignora el objetivo y cura a
+    /// quien la lanza (FASE-10 §2 D9); se manda igualmente porque el mensaje lo exige.
+    /// </summary>
+    public void SendSkillCast(string skillKey, int targetEntityId) =>
+        Send(Opcode.SkillCast, new C2SSkillCast { SkillKey = skillKey, TargetEntityId = targetEntityId });
+
+    /// <summary>Gastar un punto de stat sin gastar. Un punto por llamada (FASE-10 §2 D4).</summary>
+    public void SendAllocateStatPoint(StatKind stat) =>
+        Send(Opcode.AllocateStatPoint, new C2SAllocateStatPoint { Stat = stat });
+
     private void PumpIncoming()
     {
         var now = ServerClock.NowMs;
@@ -505,6 +525,8 @@ public partial class NetClient : Node
                     LastWorldEnter = worldEnter;
                     Gold = worldEnter.Stats.Gold;
                     Xp = worldEnter.Stats.Xp;
+                    Level = worldEnter.Stats.Level;
+                    StatPoints = worldEnter.Stats.StatPoints;
                     WorldEnterReceived?.Invoke(worldEnter);
                 }
 
@@ -561,6 +583,7 @@ public partial class NetClient : Node
             case Opcode.EquipmentUpdate:
                 if (FrameCodec.TryDecodePayload<S2CEquipmentUpdate>(frame, out var equipUpdate) && equipUpdate is not null)
                 {
+                    StatPoints = equipUpdate.StatPoints;
                     EquipmentUpdateReceived?.Invoke(equipUpdate);
                 }
 
@@ -643,6 +666,8 @@ public partial class NetClient : Node
                 if (FrameCodec.TryDecodePayload<S2CXpUpdate>(frame, out var xp) && xp is not null)
                 {
                     Xp = xp.Xp;
+                    XpToNextLevel = xp.XpToNextLevel;
+                    Level = xp.Level;
                     XpUpdateReceived?.Invoke(xp);
                 }
 

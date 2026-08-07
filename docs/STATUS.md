@@ -636,25 +636,87 @@ afirma primero que están en alcance y luego que se rechaza por zona. El `--pvp`
 entero contra el servidor real pero no fija la distancia, porque el margen de llegada del
 caminante del bot es de 0,3 tiles. Los dos juntos cubren el criterio; ninguno solo lo haría.
 
+## Hecho en la Fase 10 — Progresión
+
+Plan completo en `docs/fases/FASE-10-progresion.md` (con una §11 al cierre sobre lo que pasó de
+verdad frente a lo planeado). El protocolo no sube de versión: sólo faltaba un hueco real
+(`AllocateStatPoint = 0x0063`), cerrado con el mismo criterio que `ShopRepair`/`LootTake`.
+
+- `Shared/Simulation/LevelingFormulas.cs`: la curva de XP, pura y exacta (100 × nivel).
+- `Shared/Data/`: `ProgressionConstants` (3 puntos de stat por nivel), `StatKind`, y
+  `SkillDefinition`/`SkillLoader`/`SkillCatalog` — las habilidades viven en `Shared`, no en
+  `Server/Content`, porque la barra del cliente necesita conocerlas (a diferencia de
+  `MonsterDefinition`).
+- `Server/Combat/LevelingSystem.cs` (puro): concede XP con bucle de niveles de más, sube puntos
+  de stat, recalcula HP/MP máximos y cura del todo — nunca deja a nadie peor de lo que estaba.
+- `Server/Combat/SkillSystem.cs` (puro): valida nivel → maná → cooldown → alcance/zona, mismo
+  reparto Shared/Server que `CombatSystem`. Cooldown de habilidad aparte del de ataque básico
+  (`PlayerEntity.SkillCooldowns`, un diccionario, no un único valor).
+- Daño/curación de habilidad reutilizan `CombatFormulas.Hit` con un bonus plano (`Power`); curar
+  no tira dados — depende del contenido, no de la suerte.
+- `ClassDefinition` gana `HpPerLevel`/`MpPerLevel`; HP/MP máximos ahora escalan con el nivel.
+- Hueco real cerrado de paso: `stat_str/int/vit/dex` y `stat_points` existían desde la Fase 2,
+  se leían y **nadie los escribía** — mismo patrón que el hp/mp/xp/level de la Fase 9.
+- `content/skills/*.json`: 3 por clase (guerrero, mago, híbrido — el híbrido con la única
+  curación, apuntada siempre a uno mismo).
+- Cliente: barra de habilidades en el HUD (teclas 1-3, cooldown visual optimista) y un panel de
+  reparto de stats nuevo (tecla `K`), ambos sin arte.
+
+### Dos fallos reales de servidor, encontrados sólo por la verificación E2E
+
+- `AllocateStatPoint` usa `OpcodeFamily.Character` a propósito (D5), pero
+  `SessionMessageHandler.IsWorldFamily` nunca incluyó esa familia — el mensaje caía en "opcode no
+  implementado" y **expulsaba la sesión** en el primer intento de repartir un punto de stat.
+- Subir de nivel concedía puntos de stat de verdad en el servidor, pero el cliente nunca se
+  enteraba (`StatPoints` sólo viaja en `EquipmentUpdate`, que sólo se mandaba al equipar). Un
+  personaje podía tener 3 puntos reales y seguir viendo los de antes hasta el siguiente cambio de
+  equipo.
+
+Ninguno de los dos estaba anotado a propósito como hueco: los sacó a la luz sólo la verificación
+contra el servidor real, porque nada en `Server.Tests` ejercita el enrutado de
+`SessionMessageHandler` ni el camino completo de red de un `GrantXp`. Detalle completo, con los
+hallazgos de herramienta (posiciones de monstruo obsoletas en el bot, persiguiendo un imposible al
+otro lado de un muro interno del campo, y quedarse quieto durante el cooldown de una habilidad
+casi lo mata) en `docs/fases/FASE-10-progresion.md` §11.
+
+### Verificación Fase 10 (esta sesión, contra el servicio de producción real)
+
+Desplegada con `deploy/publish.sh` antes de verificar (dos veces: una para el fix de
+`AllocateStatPoint`/`GrantXp`, otra ya limpia).
+
+1. ✅ `dotnet build` sin warnings; `dotnet test`: **155/155 compartidos + 245/245 servidor**.
+2. ✅ `dotnet build client/Epimeteo.Client.csproj`: sin warnings. UI no ejercitada a mano.
+3. ✅ `tools/Epimeteo.WorldBot --progression-grind`: **23/23 comprobaciones en verde** — habilidad
+   bloqueada por nivel rechazada, Golpe Poderoso hace daño de verdad con cooldown propio (no
+   comparte con el ataque básico) y maná real (tercer lanzamiento seguido → `NotEnoughMana`), sube
+   de nivel matando monstruos sin tocar SQL, HP/MP máximos escalan exacto con `HpPerLevel`/
+   `MpPerLevel`, concede los 3 puntos de la subida y repartirlos sube VIT de 6 a 9 uno a uno.
+4. ✅ `tools/Epimeteo.WorldBot --progression-verify`, tras `systemctl restart epimeteo` real:
+   **7/7 comprobaciones en verde** — nivel, MP máximo y lleno, HP con un valor sano, puntos de
+   stat gastados y VIT sobreviven el reinicio.
+
+**Límite honesto:** "cura del todo al subir" lo fija exacto `LevelingSystemTests` con estado
+controlado; el E2E prueba el camino entero contra el servidor real, pero el campo sigue lleno de
+monstruos mientras se reparten los puntos después de subir, así que se comprueba con un margen del
+90 % en vez de la igualdad exacta. Los dos juntos cubren el criterio; ninguno solo lo haría.
+
 ## Siguiente sesión
 
-**Fase 10 — Progresión · Sonnet.** Siguiente en `docs/03-roadmap-fases.md` — **cambio de modelo**
-(CLAUDE.md §6: implementación sobre diseño cerrado). Le toca la curva de XP y subida de nivel (la
-Fase 9 mueve la XP pero nadie sube), los puntos de stat, y 3–4 habilidades por clase con maná y
-cooldown — para las que `SkillCast` (`0x0061`) sigue reservado sin tipar. También le tocará
-reajustar los números provisionales de combate de esta fase (ataque = fuerza efectiva, defensa =
-vitalidad/2, daño = ataque − defensa/2 ±15 %).
+**Fase 11 — Chat y social · Sonnet.** Siguiente en `docs/03-roadmap-fases.md` (mismo modelo:
+implementación sobre diseño cerrado). Canales global/zona/susurro/sistema con rate limit y filtro
+básico, lista de jugadores conectados, comandos `/w`/`/who`/`/help`, y comandos de admin (kick,
+ban, teleport, dar ítem) todos auditados.
 
 **Pendiente aparte, en cuanto haya una máquina con entorno gráfico:** abrir `client/project.godot`
 en Godot 4.5 y comprobar a mano lo que este servidor headless no puede: dos clientes viéndose
-mover (Fase 4), el drag & drop del inventario (`I`, Fase 6), la tienda (`E`, Fase 7) y ahora el
-combate (espacio, con el HUD de vida/XP y los números de daño en el log). El cliente puede apuntar
-a `wss://epimeteo.waterressistan.duckdns.org/ws` en vez de `127.0.0.1`.
+mover (Fase 4), el drag & drop del inventario (`I`, Fase 6), la tienda (`E`, Fase 7), el combate
+(espacio, Fase 9) y ahora la barra de habilidades (teclas 1-3) y el panel de stats (`K`). El
+cliente puede apuntar a `wss://epimeteo.waterressistan.duckdns.org/ws` en vez de `127.0.0.1`.
 
 **Pendiente de decidir, no técnico:** los datos de prueba acumulados en la BD (cuentas `Bot*`/
-`smoke_*`/`farm_*`/`pvp_*` de `SmokeClient`/`WorldBot` a lo largo de las Fases 1–9) — si el juego
-se va a anunciar de verdad, alguien tiene que decidir si se limpian antes. Esta sesión no ha
-borrado nada.
+`smoke_*`/`farm_*`/`pvp_*`/`prog_*` de `SmokeClient`/`WorldBot` a lo largo de las Fases 1–10) — si
+el juego se va a anunciar de verdad, alguien tiene que decidir si se limpian antes. Esta sesión no
+ha borrado nada.
 
 **Verificación real que sólo puede hacer un humano:** conectar desde un móvil en datos 4G (no
 en la red del servidor) a `wss://epimeteo.waterressistan.duckdns.org/ws` con el cliente Godot, en

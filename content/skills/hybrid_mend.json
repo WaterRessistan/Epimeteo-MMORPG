@@ -1,0 +1,11 @@
+{
+  "key": "skill.hybrid_mend",
+  "displayName": "Remendar",
+  "classKey": "class.hybrid",
+  "requiredLevel": 4,
+  "manaCost": 16,
+  "cooldownMs": 6000,
+  "kind": "Heal",
+  "power": 25,
+  "rangeTiles": 1.5
+}

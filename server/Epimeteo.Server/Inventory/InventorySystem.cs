@@ -424,10 +424,12 @@ public static class InventorySystem
     /// </summary>
     public static DerivedStats ComputeDerivedStats(
         PlayerInventory inventory, ItemCatalog catalog, ClassDefinition classDef,
-        int baseStr, int baseInt, int baseVit, int baseDex)
+        int baseStr, int baseInt, int baseVit, int baseDex, int level)
     {
-        var hpMax = classDef.BaseHp;
-        var mpMax = classDef.BaseMp;
+        // HpPerLevel/MpPerLevel por encima del nivel 1 (Fase 10 §2 D3): hasta ahora la vida
+        // máxima era fija toda la partida, algo que sólo daba igual porque nada subía de nivel.
+        var hpMax = classDef.BaseHp + (classDef.HpPerLevel * (level - 1));
+        var mpMax = classDef.BaseMp + (classDef.MpPerLevel * (level - 1));
         var str = baseStr;
         var intStat = baseInt;
         var vit = baseVit;

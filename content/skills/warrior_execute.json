@@ -1,0 +1,11 @@
+{
+  "key": "skill.warrior_execute",
+  "displayName": "Ejecutar",
+  "classKey": "class.warrior",
+  "requiredLevel": 7,
+  "manaCost": 22,
+  "cooldownMs": 9000,
+  "kind": "Damage",
+  "power": 30,
+  "rangeTiles": 1.5
+}

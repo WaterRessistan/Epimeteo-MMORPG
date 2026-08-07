@@ -123,7 +123,12 @@ public sealed class SessionMessageHandler
         or OpcodeFamily.Shop
         or OpcodeFamily.Farm
         or OpcodeFamily.Combat
-        or OpcodeFamily.Chat;
+        or OpcodeFamily.Chat
+        // Character normalmente no toca el mundo (los otros cinco opcodes de esta familia tienen
+        // su propio case arriba y nunca llegan aquí), pero AllocateStatPoint sí necesita el
+        // personaje cargado en el tick (FASE-10 §2 D5) — sin este caso caía en "no implementado"
+        // y se expulsaba la sesión sólo por repartir un punto de stat.
+        or OpcodeFamily.Character;
 
     private void HandleHello(Session session, ReadOnlyMemory<byte> frame)
     {
@@ -335,7 +340,8 @@ public sealed class SessionMessageHandler
             items,
             character.Gold,
             character.Level,
-            character.Xp);
+            character.Xp,
+            character.StatPoints);
 
         session.Send(Opcode.WorldEnter, new S2CWorldEnter
         {

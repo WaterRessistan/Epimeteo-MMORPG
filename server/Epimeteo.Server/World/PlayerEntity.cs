@@ -92,6 +92,16 @@ public sealed class PlayerEntity : WorldEntity
     /// <summary>Experiencia acumulada.</summary>
     public long Xp { get; set; }
 
+    /// <summary>Puntos de stat sin gastar (Fase 10).</summary>
+    public int StatPoints { get; set; }
+
+    /// <summary>
+    /// Cooldown por habilidad: instante (<c>ServerClock.NowMs</c>) en el que cada
+    /// <c>skillKey</c> vuelve a estar lista. Aparte del cooldown de <c>Attack</c> —lanzar una
+    /// habilidad no bloquea las demás ni el ataque básico (FASE-10 §2 D7).
+    /// </summary>
+    public Dictionary<string, long> SkillCooldowns { get; } = [];
+
     /// <summary>
     /// Verdadero si vida, maná o XP cambiaron desde el último guardado. Se persisten junto a la
     /// posición y el oro, en el mismo <c>UPDATE</c> (FASE-09 §2 D12).

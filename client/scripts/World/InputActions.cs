@@ -24,4 +24,16 @@ public static class InputActions
 
     /// <summary>Atacar al objetivo más cercano (espacio). El servidor decide si vale (Fase 9).</summary>
     public const string Attack = "attack";
+
+    /// <summary>Lanzar la habilidad del hueco 1 (tecla 1). Fase 10.</summary>
+    public const string Skill1 = "skill_1";
+
+    /// <summary>Lanzar la habilidad del hueco 2 (tecla 2). Fase 10.</summary>
+    public const string Skill2 = "skill_2";
+
+    /// <summary>Lanzar la habilidad del hueco 3 (tecla 3). Fase 10.</summary>
+    public const string Skill3 = "skill_3";
+
+    /// <summary>Alternar el panel de reparto de puntos de stat (tecla K). Fase 10.</summary>
+    public const string ToggleStats = "toggle_stats";
 }
