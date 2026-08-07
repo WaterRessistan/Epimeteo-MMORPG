@@ -60,7 +60,7 @@ public sealed class AuthService(
         await accounts.TouchLastLoginAsync(account.Id, remoteAddress, ct).ConfigureAwait(false);
         var token = await sessionTokens.IssueAsync(account.Id, remoteAddress, ct).ConfigureAwait(false);
 
-        return AuthOutcome.Success(account.Id, token);
+        return AuthOutcome.Success(account.Id, token, account.IsAdmin);
     }
 
     public async Task<AuthOutcome> RegisterAsync(

@@ -33,6 +33,12 @@ public sealed class PlayerEntity : WorldEntity
     /// <summary>Fila de <c>characters</c> a la que se guarda la posición.</summary>
     public long CharacterId { get; }
 
+    /// <summary>Cuenta dueña del personaje (Fase 11: hace falta para <c>/ban</c>).</summary>
+    public long AccountId { get; init; }
+
+    /// <summary>Si puede usar los comandos de admin del chat (FASE-11 §2 D6).</summary>
+    public bool IsAdmin { get; init; }
+
     /// <summary>Cola de inputs pendientes de simular.</summary>
     public InputQueue Inputs { get; }
 

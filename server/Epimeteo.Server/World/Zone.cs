@@ -183,6 +183,8 @@ public sealed class Zone
             Level = request.Level,
             Xp = request.Xp,
             StatPoints = request.StatPoints,
+            AccountId = request.AccountId,
+            IsAdmin = request.IsAdmin,
         };
 
         player.Cell = _grid.CellOf(position);

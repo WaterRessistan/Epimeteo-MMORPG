@@ -11,6 +11,9 @@ public sealed record Account
     public required short Status { get; init; }
 
     public DateTimeOffset? BannedUntil { get; init; }
+
+    /// <summary>Puede usar los comandos de admin del chat (FASE-11 §2 D6). Nadie se autopromociona: se concede por SQL.</summary>
+    public required bool IsAdmin { get; init; }
 }
 
 /// <summary>Valores de <c>accounts.status</c> — ver <c>docs/02-esquema-bd.md</c>.</summary>

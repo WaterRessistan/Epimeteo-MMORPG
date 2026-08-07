@@ -1,7 +1,10 @@
+using Epimeteo.Server.Chat;
 using Epimeteo.Server.Combat;
 using Epimeteo.Server.Content;
 using Epimeteo.Server.Farm;
 using Epimeteo.Server.Inventory;
+using Epimeteo.Server.Persistence.Admin;
+using Epimeteo.Server.Persistence.Chat;
 using Epimeteo.Server.Persistence.Economy;
 using Epimeteo.Server.Persistence.Combat;
 using Epimeteo.Server.Persistence.Farm;
@@ -55,6 +58,8 @@ public sealed class GameWorld
     private readonly MonsterCatalog _monsters;
     private readonly SkillCatalog _skills;
     private readonly ICombatLogSink _combatLogSink;
+    private readonly IChatLogSink _chatLogSink;
+    private readonly IAdminActionSink _adminActionSink;
     private readonly EntityIdAllocator _entityIds;
     private readonly Dictionary<string, MonsterSpawner> _spawners = new(StringComparer.Ordinal);
     private readonly int _saveIntervalTicks;
@@ -77,6 +82,8 @@ public sealed class GameWorld
         MonsterCatalog monsters,
         SkillCatalog skills,
         ICombatLogSink combatLogSink,
+        IChatLogSink chatLogSink,
+        IAdminActionSink adminActionSink,
         EntityIdAllocator entityIds,
         int saveIntervalSeconds = 30)
     {
@@ -94,6 +101,8 @@ public sealed class GameWorld
         _monsters = monsters;
         _skills = skills;
         _combatLogSink = combatLogSink;
+        _chatLogSink = chatLogSink;
+        _adminActionSink = adminActionSink;
         _entityIds = entityIds;
         _saveIntervalTicks = saveIntervalSeconds * SimulationConstants.TickRate;
 
@@ -374,6 +383,10 @@ public sealed class GameWorld
 
                 case Opcode.AllocateStatPoint:
                     HandleAllocateStatPoint(message);
+                    break;
+
+                case Opcode.ChatSend:
+                    HandleChatSend(message, nowMs);
                     break;
 
                 default:
@@ -1382,6 +1395,278 @@ public sealed class GameWorld
 
     private static void SendProgressionFailure(PlayerEntity player, ResultCode code) => player.Peer.Send(
         Opcode.SystemMessage, new S2CSystemMessage { Severity = 0, Key = $"progression.{code}", Args = [] });
+
+    /// <summary>
+    /// Un <c>ChatSend</c>: mensaje normal o comando de barra, según decida
+    /// <see cref="ChatCommandParser"/> (FASE-11 §2 D1/D3). El cliente no sabe qué comandos
+    /// existen — sólo manda texto.
+    /// </summary>
+    private void HandleChatSend(in WorldMessage message, long nowMs)
+    {
+        if (!FrameCodec.TryDecodeBody<C2SChatSend>(message.Payload, out var chat) || chat is null ||
+            !Enum.IsDefined(chat.Channel) || chat.Text.Length is 0 or > ChatConstants.MaxMessageLength)
+        {
+            _log.Warning("ChatSend ilegible en la sesión {SessionId}", message.SessionId);
+            KickSession(message.SessionId, KickReason.ProtocolError);
+            return;
+        }
+
+        if (FindPlayerZone(message.SessionId) is not { } found)
+        {
+            return;
+        }
+
+        var (zone, player) = found;
+
+        switch (ChatCommandParser.Parse(chat.Channel, chat.Text))
+        {
+            // Un cliente honesto sólo manda Global/Zone para un mensaje normal — Whisper/System
+            // los pone el servidor. Mandar otra cosa es un dato imposible con el protocolo
+            // cerrado, no una jugada que falla (mismo criterio que un EquipSlot inválido, Fase 6).
+            case ChatCommand.Say say when say.Channel is ChatChannel.Global or ChatChannel.Zone:
+                HandleSay(zone, player, say, nowMs);
+                break;
+
+            case ChatCommand.Say:
+                _log.Warning("ChatSend con canal Whisper/System puesto por el cliente en la sesión {SessionId}", message.SessionId);
+                KickSession(message.SessionId, KickReason.ProtocolError);
+                break;
+
+            case ChatCommand.Whisper whisper:
+                HandleWhisper(player, whisper, nowMs);
+                break;
+
+            case ChatCommand.Who:
+                HandleWho(player);
+                break;
+
+            case ChatCommand.Help:
+                HandleHelp(player);
+                break;
+
+            case ChatCommand.Kick kick:
+                HandleKick(player, kick);
+                break;
+
+            case ChatCommand.Ban ban:
+                HandleBan(player, ban);
+                break;
+
+            case ChatCommand.Teleport teleport:
+                HandleTeleport(zone, player, teleport, nowMs);
+                break;
+
+            case ChatCommand.Give give:
+                HandleGive(player, give);
+                break;
+
+            case ChatCommand.Invalid invalid:
+                SendChatFailure(player, invalid.Code);
+                break;
+        }
+    }
+
+    private void HandleSay(Zone zone, PlayerEntity player, ChatCommand.Say say, long nowMs)
+    {
+        _chatLogSink.Enqueue(new ChatLogSave(player.CharacterId, say.Channel, say.Text));
+
+        var outgoing = new S2CChatMessage
+        {
+            Channel = say.Channel,
+            SenderName = player.Name,
+            Text = ChatFilter.Censor(say.Text),
+            ServerTimeMs = nowMs,
+        };
+
+        if (say.Channel == ChatChannel.Zone)
+        {
+            BroadcastToZone(zone, Opcode.ChatMessage, outgoing);
+        }
+        else
+        {
+            BroadcastToWorld(Opcode.ChatMessage, outgoing);
+        }
+    }
+
+    /// <summary><c>/w Nombre mensaje</c>: sólo le llega al destinatario (y de vuelta a quien lo mandó, como eco).</summary>
+    private void HandleWhisper(PlayerEntity sender, ChatCommand.Whisper whisper, long nowMs)
+    {
+        var target = FindPlayerByName(whisper.TargetName);
+        if (target is null)
+        {
+            SendChatFailure(sender, ResultCode.TargetNotFound);
+            return;
+        }
+
+        _chatLogSink.Enqueue(new ChatLogSave(sender.CharacterId, ChatChannel.Whisper, whisper.Text));
+
+        var outgoing = new S2CChatMessage
+        {
+            Channel = ChatChannel.Whisper,
+            SenderName = sender.Name,
+            Text = ChatFilter.Censor(whisper.Text),
+            ServerTimeMs = nowMs,
+        };
+
+        target.Peer.Send(Opcode.ChatMessage, outgoing);
+
+        if (target.Id != sender.Id)
+        {
+            sender.Peer.Send(Opcode.ChatMessage, outgoing);
+        }
+    }
+
+    /// <summary><c>/who</c>: la lista de nombres conectados, en todas las zonas.</summary>
+    private void HandleWho(PlayerEntity player)
+    {
+        var names = _zones.Values.SelectMany(zone => zone.Players).Select(p => p.Name).ToArray();
+        player.Peer.Send(Opcode.SystemMessage, new S2CSystemMessage { Severity = 0, Key = "chat.who", Args = names });
+    }
+
+    private static readonly string[] HelpCommands =
+    [
+        "/w <nombre> <mensaje>",
+        "/who",
+        "/help",
+        "/kick <nombre> [motivo]",
+        "/ban <nombre> <horas> [motivo]",
+        "/teleport <nombre>",
+        "/give <nombre> <defKey> <cantidad>",
+    ];
+
+    /// <summary><c>/help</c>: la lista fija de arriba. Los de admin salen igual para todos — quien no lo sea sólo verá <c>NotAuthorized</c> si los prueba.</summary>
+    private void HandleHelp(PlayerEntity player) =>
+        player.Peer.Send(Opcode.SystemMessage, new S2CSystemMessage { Severity = 0, Key = "chat.help", Args = HelpCommands });
+
+    /// <summary>
+    /// Expulsa sin banear: la cuenta no queda tocada, puede reconectar en el acto
+    /// (FASE-11 §2 D5: el objetivo tiene que estar conectado).
+    /// </summary>
+    private void HandleKick(PlayerEntity admin, ChatCommand.Kick kick)
+    {
+        if (!admin.IsAdmin)
+        {
+            SendChatFailure(admin, ResultCode.NotAuthorized);
+            return;
+        }
+
+        var target = FindPlayerByName(kick.TargetName);
+        if (target is null)
+        {
+            SendChatFailure(admin, ResultCode.TargetNotFound);
+            return;
+        }
+
+        LogAdminAction(admin, target, AdminAction.Kick, kick.Reason);
+        target.Peer.Kick(KickReason.Banned);
+        ConfirmAdminAction(admin, target.Name);
+    }
+
+    /// <summary>
+    /// Expulsa y deja la cuenta baneada de verdad: <c>AuthService.LoginAsync</c> ya rechaza
+    /// <c>AccountStatus.Banned</c>, así que no puede volver a entrar hasta que pase
+    /// <see cref="ChatCommand.Ban.Hours"/> (FASE-11 §2 D7).
+    /// </summary>
+    private void HandleBan(PlayerEntity admin, ChatCommand.Ban ban)
+    {
+        if (!admin.IsAdmin)
+        {
+            SendChatFailure(admin, ResultCode.NotAuthorized);
+            return;
+        }
+
+        var target = FindPlayerByName(ban.TargetName);
+        if (target is null)
+        {
+            SendChatFailure(admin, ResultCode.TargetNotFound);
+            return;
+        }
+
+        LogAdminAction(admin, target, AdminAction.Ban, ban.Reason, banHours: ban.Hours);
+        target.Peer.Kick(KickReason.Banned);
+        ConfirmAdminAction(admin, target.Name);
+    }
+
+    /// <summary>
+    /// Mueve al admin junto al objetivo (FASE-11 §2 D8: al revés que "traer a alguien" es la
+    /// convención habitual de herramientas de GM). Sólo busca en la zona del propio admin — cruzar
+    /// de zona no está soportado esta fase (FASE-11 §1); con una sola zona hoy, da igual.
+    /// </summary>
+    private void HandleTeleport(Zone adminZone, PlayerEntity admin, ChatCommand.Teleport teleport, long nowMs)
+    {
+        if (!admin.IsAdmin)
+        {
+            SendChatFailure(admin, ResultCode.NotAuthorized);
+            return;
+        }
+
+        var target = adminZone.Players.FirstOrDefault(
+            p => string.Equals(p.Name, teleport.TargetName, StringComparison.OrdinalIgnoreCase));
+
+        if (target is null)
+        {
+            SendChatFailure(admin, ResultCode.TargetNotFound);
+            return;
+        }
+
+        adminZone.Teleport(admin, target.State.Pos, nowMs);
+        LogAdminAction(admin, target, AdminAction.Teleport, reason: string.Empty);
+        ConfirmAdminAction(admin, target.Name);
+    }
+
+    /// <summary>Mete un ítem nuevo en la bolsa del objetivo, con la misma validación que cualquier otra alta (loot, compra).</summary>
+    private void HandleGive(PlayerEntity admin, ChatCommand.Give give)
+    {
+        if (!admin.IsAdmin)
+        {
+            SendChatFailure(admin, ResultCode.NotAuthorized);
+            return;
+        }
+
+        var target = FindPlayerByName(give.TargetName);
+        if (target is null)
+        {
+            SendChatFailure(admin, ResultCode.TargetNotFound);
+            return;
+        }
+
+        var result = InventorySystem.TryAddNew(target.Inventory, _items, give.DefKey, give.Quantity);
+        if (!result.Ok)
+        {
+            SendChatFailure(admin, result.Code);
+            return;
+        }
+
+        ApplyResult(target, result);
+        LogAdminAction(admin, target, AdminAction.Give, reason: string.Empty, defKey: give.DefKey, quantity: give.Quantity);
+        ConfirmAdminAction(admin, target.Name);
+    }
+
+    /// <summary>Busca por nombre en todas las zonas (FASE-11 §2 D4) — no sólo la del que pregunta.</summary>
+    private PlayerEntity? FindPlayerByName(string name) => _zones.Values
+        .SelectMany(zone => zone.Players)
+        .FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    private void LogAdminAction(
+        PlayerEntity admin, PlayerEntity target, AdminAction action, string reason,
+        int? banHours = null, string? defKey = null, int? quantity = null) =>
+        _adminActionSink.Enqueue(new AdminActionSave(
+            admin.CharacterId, admin.Name, target.CharacterId, target.Name, action, reason, banHours, defKey, quantity));
+
+    private static void ConfirmAdminAction(PlayerEntity admin, string targetName) => admin.Peer.Send(
+        Opcode.SystemMessage, new S2CSystemMessage { Severity = 0, Key = "chat.AdminActionDone", Args = [targetName] });
+
+    private static void SendChatFailure(PlayerEntity player, ResultCode code) => player.Peer.Send(
+        Opcode.SystemMessage, new S2CSystemMessage { Severity = 0, Key = $"chat.{code}", Args = [] });
+
+    /// <summary>Manda a todo el mundo, en todas las zonas — el canal global no se queda en la propia (FASE-11 §2 D2).</summary>
+    private void BroadcastToWorld<T>(Opcode opcode, T payload)
+    {
+        foreach (var zone in _zones.Values)
+        {
+            BroadcastToZone(zone, opcode, payload);
+        }
+    }
 
     /// <summary>
     /// Concede XP y, si cruza de nivel, cura del todo y avisa a quien tenga al jugador en su área

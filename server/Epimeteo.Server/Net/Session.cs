@@ -113,6 +113,9 @@ public sealed class Session : IWorldPeer
     /// <summary>Cuenta autenticada. 0 hasta que <c>Login</c>/<c>Register</c> tienen éxito.</summary>
     public long AccountId { get; internal set; }
 
+    /// <summary>Puede usar los comandos de admin del chat (FASE-11 §2 D6). Se fija una vez, al autenticar.</summary>
+    public bool IsAdmin { get; internal set; }
+
     /// <summary>Personaje elegido. 0 hasta que <c>CharSelect</c> tiene éxito.</summary>
     public long CharacterId { get; internal set; }
 

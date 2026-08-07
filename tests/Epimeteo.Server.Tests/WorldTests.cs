@@ -1,6 +1,8 @@
 using Epimeteo.Server.Content;
 using Epimeteo.Server.Farm;
 using Epimeteo.Server.Inventory;
+using Epimeteo.Server.Persistence.Admin;
+using Epimeteo.Server.Persistence.Chat;
 using Epimeteo.Server.Persistence.Combat;
 using Epimeteo.Server.Persistence.Economy;
 using Epimeteo.Server.Persistence.Farm;
@@ -64,6 +66,20 @@ public sealed class WorldTests
         public void Enqueue(in CombatLogSave save) => Saves.Add(save);
     }
 
+    private sealed class FakeChatLogSink : IChatLogSink
+    {
+        public List<ChatLogSave> Saves { get; } = [];
+
+        public void Enqueue(in ChatLogSave save) => Saves.Add(save);
+    }
+
+    private sealed class FakeAdminActionSink : IAdminActionSink
+    {
+        public List<AdminActionSave> Saves { get; } = [];
+
+        public void Enqueue(in AdminActionSave save) => Saves.Add(save);
+    }
+
     private static (GameWorld World, WorldInbox Inbox, FakeSink Sink) Build(int saveIntervalSeconds = 30)
     {
         var maps = new MapCatalog(ContentPaths.ResolveContentRoot());
@@ -74,7 +90,8 @@ public sealed class WorldTests
         var world = new GameWorld(
             maps, inbox, sink, Items, Classes, new FakeInventorySink(),
             Shops, shopRuntime, new FakeEconomySink(), Crops, farmRuntime, new FakeFarmSink(),
-            Monsters, Skills, new FakeCombatLogSink(), new EntityIdAllocator(), saveIntervalSeconds);
+            Monsters, Skills, new FakeCombatLogSink(), new FakeChatLogSink(), new FakeAdminActionSink(),
+            new EntityIdAllocator(), saveIntervalSeconds);
         return (world, inbox, sink);
     }
 
@@ -88,7 +105,7 @@ public sealed class WorldTests
     /// </summary>
     private const int TestEntityIdBase = 1000;
 
-    private static WorldJoinRequest VillageJoin(int entityId, Vec2 position, long characterId, long gold = 0) => new(
+    private static WorldJoinRequest VillageJoin(int entityId, Vec2 position, long characterId, long gold = 0, bool isAdmin = false) => new(
         TestEntityIdBase + entityId,
         characterId,
         $"Jugador{entityId}",
@@ -109,7 +126,7 @@ public sealed class WorldTests
         Gold: gold,
         Level: 1,
         Xp: 0,
-        StatPoints: 0);
+        StatPoints: 0, AccountId: entityId, IsAdmin: isAdmin);
 
     private static void PostInput(WorldInbox inbox, int sessionId, uint seq, int dirX, int dirY)
     {
@@ -126,6 +143,14 @@ public sealed class WorldTests
             FrameCodec.Options);
 
         inbox.Post(sessionId, Opcode.InputState, payload);
+    }
+
+    private static void PostChat(WorldInbox inbox, int sessionId, ChatChannel channel, string text)
+    {
+        var payload = MessagePackSerializer.Serialize(
+            new C2SChatSend { Channel = channel, Text = text }, FrameCodec.Options);
+
+        inbox.Post(sessionId, Opcode.ChatSend, payload);
     }
 
     [Fact]
@@ -358,5 +383,116 @@ public sealed class WorldTests
         world.FlushAllState();
 
         Assert.Single(sink.Saves);
+    }
+
+    [Fact]
+    public void UnMensajeGlobal_LeLlegaATodosLosDemas()
+    {
+        var (world, inbox, _) = Build();
+        var a = new FakeWorldPeer(1);
+        var b = new FakeWorldPeer(2);
+        inbox.PostControl(new PlayerJoinCommand(a, VillageJoin(1, new Vec2(48.5f, 60.5f), 100)));
+        inbox.PostControl(new PlayerJoinCommand(b, VillageJoin(2, new Vec2(49.5f, 60.5f), 101)));
+        world.Tick(1, 50);
+
+        PostChat(inbox, 1, ChatChannel.Global, "hola a todos");
+        world.Tick(2, 100);
+
+        var received = b.Messages<S2CChatMessage>(Opcode.ChatMessage).Single();
+        Assert.Equal(ChatChannel.Global, received.Channel);
+        Assert.Equal("Jugador1", received.SenderName);
+        Assert.Equal("hola a todos", received.Text);
+    }
+
+    [Fact]
+    public void UnSusurro_SoloLeLlegaAlDestinatario()
+    {
+        var (world, inbox, _) = Build();
+        var a = new FakeWorldPeer(1);
+        var b = new FakeWorldPeer(2);
+        var c = new FakeWorldPeer(3);
+        inbox.PostControl(new PlayerJoinCommand(a, VillageJoin(1, new Vec2(48.5f, 60.5f), 100)));
+        inbox.PostControl(new PlayerJoinCommand(b, VillageJoin(2, new Vec2(49.5f, 60.5f), 101)));
+        inbox.PostControl(new PlayerJoinCommand(c, VillageJoin(3, new Vec2(50.5f, 60.5f), 102)));
+        world.Tick(1, 50);
+
+        PostChat(inbox, 1, ChatChannel.Global, "/w Jugador2 esto es privado");
+        world.Tick(2, 100);
+
+        var receivedByTarget = b.Messages<S2CChatMessage>(Opcode.ChatMessage).Single();
+        Assert.Equal(ChatChannel.Whisper, receivedByTarget.Channel);
+        Assert.Equal("esto es privado", receivedByTarget.Text);
+        Assert.Empty(c.Messages<S2CChatMessage>(Opcode.ChatMessage));
+
+        // Eco: quien susurra también ve lo que mandó.
+        Assert.Single(a.Messages<S2CChatMessage>(Opcode.ChatMessage));
+    }
+
+    [Fact]
+    public void UnSusurroAUnNombreQueNoExiste_SeRechaza()
+    {
+        var (world, inbox, _) = Build();
+        var a = new FakeWorldPeer(1);
+        inbox.PostControl(new PlayerJoinCommand(a, VillageJoin(1, new Vec2(48.5f, 60.5f), 100)));
+        world.Tick(1, 50);
+
+        PostChat(inbox, 1, ChatChannel.Global, "/w Fantasma hola");
+        world.Tick(2, 100);
+
+        Assert.Empty(a.Messages<S2CChatMessage>(Opcode.ChatMessage));
+        var failure = a.Messages<S2CSystemMessage>(Opcode.SystemMessage).Single();
+        Assert.Equal($"chat.{ResultCode.TargetNotFound}", failure.Key);
+    }
+
+    [Fact]
+    public void UnComandoDeAdmin_SinSerAdmin_SeRechaza()
+    {
+        var (world, inbox, _) = Build();
+        var noAdmin = new FakeWorldPeer(1);
+        var target = new FakeWorldPeer(2);
+        inbox.PostControl(new PlayerJoinCommand(noAdmin, VillageJoin(1, new Vec2(48.5f, 60.5f), 100)));
+        inbox.PostControl(new PlayerJoinCommand(target, VillageJoin(2, new Vec2(49.5f, 60.5f), 101)));
+        world.Tick(1, 50);
+
+        PostChat(inbox, 1, ChatChannel.Global, "/kick Jugador2 porque sí");
+        world.Tick(2, 100);
+
+        Assert.False(target.Kicked);
+        var failure = noAdmin.Messages<S2CSystemMessage>(Opcode.SystemMessage).Single();
+        Assert.Equal($"chat.{ResultCode.NotAuthorized}", failure.Key);
+    }
+
+    [Fact]
+    public void UnKickDeUnAdmin_ExpulsaAlObjetivoYQuedaAuditado()
+    {
+        var (world, inbox, _) = Build();
+        var admin = new FakeWorldPeer(1);
+        var target = new FakeWorldPeer(2);
+        inbox.PostControl(new PlayerJoinCommand(admin, VillageJoin(1, new Vec2(48.5f, 60.5f), 100, isAdmin: true)));
+        inbox.PostControl(new PlayerJoinCommand(target, VillageJoin(2, new Vec2(49.5f, 60.5f), 101)));
+        world.Tick(1, 50);
+
+        PostChat(inbox, 1, ChatChannel.Global, "/kick Jugador2 se porta mal");
+        world.Tick(2, 100);
+
+        Assert.True(target.Kicked);
+        Assert.Equal(KickReason.Banned, target.KickedReason);
+    }
+
+    [Fact]
+    public void QuienNoEsAdmin_PuedeUsarWhoYHelp()
+    {
+        var (world, inbox, _) = Build();
+        var a = new FakeWorldPeer(1);
+        inbox.PostControl(new PlayerJoinCommand(a, VillageJoin(1, new Vec2(48.5f, 60.5f), 100)));
+        world.Tick(1, 50);
+
+        PostChat(inbox, 1, ChatChannel.Global, "/who");
+        PostChat(inbox, 1, ChatChannel.Global, "/help");
+        world.Tick(2, 100);
+
+        var messages = a.Messages<S2CSystemMessage>(Opcode.SystemMessage).ToList();
+        Assert.Contains(messages, m => m.Key == "chat.who" && m.Args.Contains("Jugador1"));
+        Assert.Contains(messages, m => m.Key == "chat.help" && m.Args.Length > 0);
     }
 }

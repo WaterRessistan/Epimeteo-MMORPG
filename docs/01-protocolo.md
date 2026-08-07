@@ -83,7 +83,7 @@ log + cierre inmediato. No hay excepciones a esta regla.
 | 0x0061 | `SkillCast` | InWorld | skillKey, targetEntityId \| tileX,tileY — *tipado en la Fase 10 sólo con `targetEntityId`: ninguna de las habilidades de esta fase apunta a un tile, así que esa rama se deja reservada sin implementar (mismo criterio que los affixes de la Fase 6). En una curación el objetivo se ignora, siempre se cura a quien la lanza.* |
 | 0x0062 | `LootTake` | InWorld | lootEntityId, slot — *añadido en la Fase 9: el catálogo original reservó `LootDrop` (S2C) y `ContainerId.LootBag` pero ningún C2S para coger nada del saco. `InvMove` no vale, opera entre contenedores del propio personaje.* |
 | 0x0063 | `AllocateStatPoint` | InWorld | stat — *añadido en la Fase 10: el catálogo original no reservó nada para gastar puntos de stat.* |
-| 0x0070 | `ChatSend` | InWorld | canal, texto |
+| 0x0070 | `ChatSend` | InWorld | canal, texto — *tipado en la Fase 11: si el texto empieza por `/` es un comando de barra (`/w`, `/who`, `/help`, y los de admin), reconocido en el servidor; el cliente sólo manda texto.* |
 
 > `precioEsperado` en compra/venta no es opcional: si el precio del servidor no coincide, la
 > transacción se rechaza. Evita que un cambio de stock o una restock a mitad de clic cobre de más.
@@ -134,12 +134,15 @@ NotEnoughGold, OutOfStock, PriceChanged, TooFarAway, ShopNotOpen,
 TileOccupied, TileNotTilled, NotSeeded, NotReadyToHarvest, WrongSeason, WrongTool,
 TargetNotFound, TargetDead, OnCooldown, NotEnoughMana, OutOfRange, CannotAttackTarget,
 SafeZone, TargetInSafeZone, InCombat, LevelDifferenceTooHigh,
-NoStatPointsAvailable, SkillNotUnlocked
+NoStatPointsAvailable, SkillNotUnlocked,
+NotAuthorized, InvalidCommand
 ```
 
 `WrongTool` (Fase 8), `NoStatPointsAvailable` y `SkillNotUnlocked` (Fase 10) son huecos reales
 cerrados en el bloque ya reservado que les tocaba — mismo criterio que `ShopRepair`/`LootTake` en
-el catálogo de opcodes: siguiente valor libre, sin reabrir el diseño.
+el catálogo de opcodes: siguiente valor libre, sin reabrir el diseño. `NotAuthorized` e
+`InvalidCommand` (Fase 11) abren bloque nuevo (700): chat y administración no encajaban en
+ninguno de los anteriores.
 
 ## Ritmos
 

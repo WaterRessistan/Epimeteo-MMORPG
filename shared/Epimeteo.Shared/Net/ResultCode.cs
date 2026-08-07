@@ -70,4 +70,14 @@ public enum ResultCode : ushort
 
     /// <summary>La habilidad existe, pero el personaje todavía no llega al nivel que pide.</summary>
     SkillNotUnlocked = 611,
+
+    /// <summary>
+    /// Comando de administrador (<c>/kick</c>, <c>/ban</c>, <c>/teleport</c>, <c>/give</c>) desde
+    /// una cuenta sin <c>is_admin</c> (FASE-11 §2 D6). Bloque nuevo: chat y administración no
+    /// encajaban en ninguno de los anteriores.
+    /// </summary>
+    NotAuthorized = 700,
+
+    /// <summary>Un comando de barra (<c>/algo</c>) que el servidor no reconoce, o con argumentos mal formados.</summary>
+    InvalidCommand = 701,
 }

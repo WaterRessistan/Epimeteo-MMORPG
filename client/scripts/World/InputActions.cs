@@ -36,4 +36,10 @@ public static class InputActions
 
     /// <summary>Alternar el panel de reparto de puntos de stat (tecla K). Fase 10.</summary>
     public const string ToggleStats = "toggle_stats";
+
+    /// <summary>Abrir la caja de chat (Enter). Con la caja abierta, la propia caja captura el Enter para mandar. Fase 11.</summary>
+    public const string ChatFocus = "chat_focus";
+
+    /// <summary>Alternar entre canal global y de zona para el próximo mensaje (tecla T). Fase 11.</summary>
+    public const string ChatChannelToggle = "chat_channel_toggle";
 }

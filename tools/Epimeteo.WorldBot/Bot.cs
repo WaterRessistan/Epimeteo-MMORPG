@@ -56,7 +56,17 @@ internal sealed class Bot : IAsyncDisposable
 
     public string Username { get; }
 
+    /// <summary>El nombre pedido al conectar. Sólo es el nombre real del personaje si lo creó él mismo (<see cref="Name"/> es el que vale siempre).</summary>
     public string CharacterName { get; }
+
+    /// <summary>
+    /// El nombre de verdad del personaje en el mundo: el de <see cref="CharacterName"/> si lo creó
+    /// él mismo, o el que devolvió <c>CharList</c> si reconectó a uno que ya existía —
+    /// <c>WorldEnter</c> no lo trae (dando por hecho que el cliente ya lo tiene de esa lista) y
+    /// hasta ahora nada lo guardaba, así que "a quién busco por nombre" (Fase 11: <c>/w</c>,
+    /// <c>/give</c>, <c>/kick</c>...) se rompía en silencio para cualquier bot reconectado.
+    /// </summary>
+    public string Name { get; private set; } = string.Empty;
 
     /// <summary>Patrón de movimiento activo. El driver lo cambia por fases.</summary>
     public MovementPattern Pattern { get; set; } = MovementPattern.Quieto;
@@ -170,6 +180,9 @@ internal sealed class Bot : IAsyncDisposable
     /// <summary><c>SystemMessage</c> recibidos en la fase actual — así se ven los fallos de granja (<c>farm.{ResultCode}</c>, sin opcode de resultado propio).</summary>
     public List<S2CSystemMessage> SystemMessages { get; } = [];
 
+    /// <summary><c>ChatMessage</c> recibidos en la fase actual (Fase 11).</summary>
+    public List<S2CChatMessage> ChatMessages { get; } = [];
+
     public int Corrections => Prediction?.Corrections ?? 0;
 
     public float MaxErrorTiles => Prediction?.MaxErrorTiles ?? 0f;
@@ -197,6 +210,7 @@ internal sealed class Bot : IAsyncDisposable
         if (list is { Characters.Length: > 0 })
         {
             characterId = list.Characters[0].Id;
+            Name = list.Characters[0].Name;
         }
         else
         {
@@ -215,6 +229,7 @@ internal sealed class Bot : IAsyncDisposable
             }
 
             characterId = created.Character.Id;
+            Name = CharacterName;
         }
 
         CharacterId = characterId;
@@ -394,6 +409,7 @@ internal sealed class Bot : IAsyncDisposable
         CombatEvents.Clear();
         Deaths.Clear();
         XpUpdates.Clear();
+        ChatMessages.Clear();
 
         // Los sacos también: si no, quien busque "el saco que acabo de tirar" puede quedarse con
         // uno de otra fase, que además puede ser de otro jugador y tener sus derechos de saqueo.
@@ -506,6 +522,10 @@ internal sealed class Bot : IAsyncDisposable
 
             case Opcode.CombatFlagUpdate when FrameCodec.TryDecodePayload<S2CCombatFlagUpdate>(frame, out var flag) && flag is not null:
                 InCombat = flag.InCombat;
+                break;
+
+            case Opcode.ChatMessage when FrameCodec.TryDecodePayload<S2CChatMessage>(frame, out var chat) && chat is not null:
+                ChatMessages.Add(chat);
                 break;
 
             case Opcode.Pong when FrameCodec.TryDecodePayload<S2CPong>(frame, out var pong) && pong is not null:

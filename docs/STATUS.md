@@ -700,23 +700,83 @@ controlado; el E2E prueba el camino entero contra el servidor real, pero el camp
 monstruos mientras se reparten los puntos después de subir, así que se comprueba con un margen del
 90 % en vez de la igualdad exacta. Los dos juntos cubren el criterio; ninguno solo lo haría.
 
+## Hecho en la Fase 11 — Chat y social
+
+Plan completo en `docs/fases/FASE-11-chat-social.md` (con una §11 al cierre sobre lo que pasó de
+verdad frente a lo planeado). El protocolo no sube de versión: `ChatSend`/`ChatMessage`
+(`0x0070`/`0x8070`) estaban reservados desde la Fase 1, sin tipar hasta ahora — mismo caso que
+`SkillCast` en las Fases 9-10. Sin opcodes nuevos: los comandos de barra (`/w`, `/who`, `/help`,
+y los de admin) viajan como texto normal dentro de `ChatSend.Text`, reconocidos por el prefijo `/`.
+
+- `Server/Chat/ChatCommandParser.cs` (puro): reconoce el comando y sus argumentos, sin tocar el
+  mundo — lo ejecuta `GameWorld`, mismo reparto Shared/Server-puro que `CombatSystem`/`SkillSystem`.
+- `Server/Chat/ChatFilter.cs` (puro): censura básica, a propósito simple — una lista fija, no un
+  servicio de moderación. `chat_log` guarda el texto sin censurar (es para moderación); lo que se
+  retransmite sí va censurado.
+- Susurro (`/w`) resuelto buscando por nombre en **todas** las zonas, no sólo la de quien pregunta
+  (`GameWorld` está escrito para varias desde la Fase 4, aunque hoy sólo haya una).
+- `accounts.is_admin` (hueco real de esquema, migración `0006`): ninguna cuenta se autopromociona,
+  se concede a mano por SQL. Se lee una sola vez en `AuthService.LoginAsync` y viaja
+  `Session.IsAdmin` → `WorldJoinRequest.IsAdmin` → `PlayerEntity.IsAdmin`, mismo camino que
+  `StatPoints`/`Gold` desde `CharSelect`.
+- Los cuatro comandos de admin (`/kick`, `/ban`, `/teleport`, `/give`) exigen el objetivo
+  conectado —sin excepción para `/ban`, por consistencia con los otros tres, que no tienen forma
+  de no exigirlo— y quedan **todos auditados** en `admin_action_log` (tabla nueva, hueco real:
+  `docs/02` no la había diseñado). `/ban` hace además el `UPDATE accounts` real dentro del mismo
+  `AdminActionSaver` que escribe la auditoría — no hace falta un sink aparte para esa mutación.
+- `/teleport` mueve al admin junto al objetivo, no al revés (convención habitual de herramientas
+  de GM: "llévame a quien tengo que mirar").
+- Cliente: caja de chat en el HUD (`Enter` abre/manda, `T` alterna global/zona), sin arte.
+
+### Dos hallazgos reales de la verificación E2E, ninguno del servidor
+
+- **`Bot.CharacterName` no era el nombre de verdad al reconectar.** Sólo lo era si el bot creaba
+  el personaje; Fase 11 es la primera en reconectar un bot y usarlo luego como *objetivo con
+  nombre* (`--chat-verify` reutiliza las cuentas de `--chat-setup`). `/give`/`/kick` buscaban a
+  alguien que no existía, y `/teleport` "funcionaba" por pura coincidencia (nadie se había movido
+  del punto de aparición). Arreglado con `Bot.Name`, tomado de `CharList` al reconectar.
+- **El cupo de login por IP (Fase 2) y el timeout de sesión inactiva (Fase 1) chocan por primera
+  vez.** Ninguna fase anterior conectaba tantos bots de golpe; si el cupo obliga a uno a esperar
+  65 s, los que ya habían conectado no mandan nada mientras tanto y el barrido de 30 s los
+  expulsa antes de que termine el rezagado. No es un fallo de ninguno de los dos límites — se
+  resolvió reduciendo `--chat-verify` a una sola cuenta nueva y dando margen entre corridas.
+
+Detalle completo en `docs/fases/FASE-11-chat-social.md` §11.
+
+### Verificación Fase 11 (esta sesión, contra el servicio de producción real)
+
+1. ✅ `dotnet build` sin warnings; `dotnet test`: **155/155 compartidos + 272/272 servidor**.
+2. ✅ `dotnet build client/Epimeteo.Client.csproj`: sin warnings. UI no ejercitada a mano.
+3. ✅ `tools/Epimeteo.WorldBot --chat-setup`: **11/11 comprobaciones en verde** — global y zona le
+   llegan a los demás, susurro sólo al destinatario (con eco, sin fuga a un tercero), nombre
+   inexistente rechazado, `/who`/`/help` responden, comando de admin sin serlo se rechaza.
+4. ✅ `tools/Epimeteo.WorldBot --chat-verify`, tras promocionar la cuenta por SQL: **5/5
+   comprobaciones en verde** — `/teleport` mueve al admin, `/give` mete el ítem de verdad
+   (apilado sobre el del kit inicial), `/kick` y `/ban` expulsan, y la cuenta baneada no puede
+   volver a entrar.
+5. ✅ En `psql`: las cuatro acciones de admin con fila en `admin_action_log` (admin, objetivo,
+   motivo y detalles correctos); `chat_log` con las líneas de la fase 1; `accounts.status`/
+   `banned_until`/`ban_reason` reales para la cuenta baneada.
+
 ## Siguiente sesión
 
-**Fase 11 — Chat y social · Sonnet.** Siguiente en `docs/03-roadmap-fases.md` (mismo modelo:
-implementación sobre diseño cerrado). Canales global/zona/susurro/sistema con rate limit y filtro
-básico, lista de jugadores conectados, comandos `/w`/`/who`/`/help`, y comandos de admin (kick,
-ban, teleport, dar ítem) todos auditados.
+**Fase 12 — Pipeline de contenido y mapas · Sonnet.** Siguiente en `docs/03-roadmap-fases.md`
+(mismo modelo). Integración real de los packs CC0 (`ATTRIBUTIONS.md` cumplimentado), atlas
+registry (`visualKey` del JSON → región de atlas, sin rutas en la lógica), mapa del pueblo
+completo + 2 zonas exteriores, y `tools/Epimeteo.ContentValidator` verificando que toda `def_key`
+referenciada existe.
 
 **Pendiente aparte, en cuanto haya una máquina con entorno gráfico:** abrir `client/project.godot`
 en Godot 4.5 y comprobar a mano lo que este servidor headless no puede: dos clientes viéndose
 mover (Fase 4), el drag & drop del inventario (`I`, Fase 6), la tienda (`E`, Fase 7), el combate
-(espacio, Fase 9) y ahora la barra de habilidades (teclas 1-3) y el panel de stats (`K`). El
-cliente puede apuntar a `wss://epimeteo.waterressistan.duckdns.org/ws` en vez de `127.0.0.1`.
+(espacio, Fase 9), la barra de habilidades (teclas 1-3) y el panel de stats (`K`, Fase 10), y
+ahora el chat (`Enter`, `T`, Fase 11). El cliente puede apuntar a
+`wss://epimeteo.waterressistan.duckdns.org/ws` en vez de `127.0.0.1`.
 
 **Pendiente de decidir, no técnico:** los datos de prueba acumulados en la BD (cuentas `Bot*`/
-`smoke_*`/`farm_*`/`pvp_*`/`prog_*` de `SmokeClient`/`WorldBot` a lo largo de las Fases 1–10) — si
-el juego se va a anunciar de verdad, alguien tiene que decidir si se limpian antes. Esta sesión no
-ha borrado nada.
+`smoke_*`/`farm_*`/`pvp_*`/`prog_*`/`chat_*` de `SmokeClient`/`WorldBot` a lo largo de las
+Fases 1–11, incluidas varias ya baneadas por las pruebas de `/ban`) — si el juego se va a anunciar
+de verdad, alguien tiene que decidir si se limpian antes. Esta sesión no ha borrado nada.
 
 **Verificación real que sólo puede hacer un humano:** conectar desde un móvil en datos 4G (no
 en la red del servidor) a `wss://epimeteo.waterressistan.duckdns.org/ws` con el cliente Godot, en

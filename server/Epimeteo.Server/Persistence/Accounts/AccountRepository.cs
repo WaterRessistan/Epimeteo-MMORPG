@@ -13,7 +13,8 @@ public sealed class AccountRepository(NpgsqlConnectionFactory connections)
         return await connection.QuerySingleOrDefaultAsync<Account>(
             new CommandDefinition(
                 """
-                SELECT id, username, password_hash AS "PasswordHash", status, banned_until AS "BannedUntil"
+                SELECT id, username, password_hash AS "PasswordHash", status, banned_until AS "BannedUntil",
+                       is_admin AS "IsAdmin"
                   FROM accounts
                  WHERE username = @username
                 """,

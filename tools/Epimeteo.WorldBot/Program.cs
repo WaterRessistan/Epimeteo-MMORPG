@@ -82,6 +82,27 @@ internal static class Program
             return await ProgressionVerifyPhase(url, map, username);
         }
 
+        // Flujo de chat de la Fase 11 (FASE-11-chat-social.md §9): los comandos de admin exigen
+        // is_admin, y ninguna cuenta puede autopromocionarse (D6, a propósito) — hace falta la
+        // misma manipulación manual por SQL entre dos corridas que tiendas/granja, sólo que aquí
+        // es conceder el rol, no adelantar un reloj ni bajar una durabilidad.
+        if (args.Contains("--chat-setup"))
+        {
+            return await ChatSetupPhase(url, map);
+        }
+
+        if (args.Contains("--chat-verify"))
+        {
+            var usernames = (Arg(args, "--chat-verify")
+                ?? throw new InvalidOperationException("--chat-verify necesita \"admin,a,b\" de --chat-setup.")).Split(',');
+            if (usernames.Length != 3)
+            {
+                throw new InvalidOperationException("--chat-verify necesita los tres usernames que imprimió --chat-setup: \"admin,a,b\".");
+            }
+
+            return await ChatVerifyPhase(url, map, usernames[0], usernames[1], usernames[2]);
+        }
+
         var run = Guid.NewGuid().ToString("N")[..6];
 
         Console.WriteLine($"Servidor : {url}");
@@ -924,6 +945,208 @@ internal static class Program
         finally
         {
             await bot.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Fase 1 del flujo de chat (FASE-11-chat-social.md §9): tres bots — dos normales y uno que se
+    /// promocionará a admin por SQL entre las dos corridas, porque ninguna cuenta puede
+    /// autopromocionarse (D6, a propósito). Prueba todo lo que no necesita ser admin: los dos
+    /// canales, el susurro, <c>/who</c>, <c>/help</c>, y que un comando de admin se rechaza sin
+    /// serlo.
+    /// <code>dotnet run --project tools/Epimeteo.WorldBot -- --chat-setup [url]</code>
+    /// </summary>
+    private static async Task<int> ChatSetupPhase(string url, GameMap map)
+    {
+        var run = Guid.NewGuid().ToString("N")[..8];
+        var a = new Bot(url, $"chat_{run}_a", $"ChatA_{run}", map, lagMs: 0);
+        var b = new Bot(url, $"chat_{run}_b", $"ChatB_{run}", map, lagMs: 0);
+        var admin = new Bot(url, $"chat_{run}_admin", $"ChatAdmin_{run}", map, lagMs: 0);
+        var flota = new List<Bot> { a, b, admin };
+
+        try
+        {
+            Console.WriteLine("· Fase 1: canales, susurro, who/help y rechazo sin ser admin");
+            await a.ConnectAsync(register: true);
+            await b.ConnectAsync(register: true);
+            await admin.ConnectAsync(register: true);
+            await Run(flota, 500);
+
+            // ── 1. Canal global: le llega a todos ──────────────────────
+            a.SendNow(Opcode.ChatSend, new C2SChatSend { Channel = ChatChannel.Global, Text = "hola a todos" });
+            await Run(flota, 500);
+
+            var globalToB = b.ChatMessages.SingleOrDefault(m => m.Text == "hola a todos");
+            Check("Un mensaje global le llega a otro jugador", globalToB is { Channel: ChatChannel.Global });
+            Check("...con el nombre de quien lo mandó", globalToB?.SenderName == a.Name);
+
+            // ── 2. Canal de zona: también le llega (mismo mapa) ────────
+            b.ChatMessages.Clear();
+            a.SendNow(Opcode.ChatSend, new C2SChatSend { Channel = ChatChannel.Zone, Text = "hola zona" });
+            await Run(flota, 500);
+
+            var zoneToB = b.ChatMessages.SingleOrDefault(m => m.Text == "hola zona");
+            Check("Un mensaje de zona le llega a quien está en la misma zona", zoneToB is { Channel: ChatChannel.Zone });
+
+            // ── 3. Susurro: sólo al destinatario, con eco al que lo manda ──
+            a.ChatMessages.Clear();
+            b.ChatMessages.Clear();
+            admin.ChatMessages.Clear();
+            a.SendNow(Opcode.ChatSend, new C2SChatSend { Channel = ChatChannel.Global, Text = $"/w {b.Name} esto es privado" });
+            await Run(flota, 500);
+
+            var whisperToB = b.ChatMessages.SingleOrDefault();
+            Check("Un susurro le llega al destinatario", whisperToB is { Channel: ChatChannel.Whisper, Text: "esto es privado" });
+            Check("...y de vuelta a quien lo mandó, como eco", a.ChatMessages.Any(m => m.Channel == ChatChannel.Whisper));
+            Check("...pero no a un tercero", admin.ChatMessages.Count == 0);
+
+            // ── 4. Susurro a un nombre inexistente se rechaza ──────────
+            a.SystemMessages.Clear();
+            a.SendNow(Opcode.ChatSend, new C2SChatSend { Channel = ChatChannel.Global, Text = "/w Fantasma hola" });
+            await Run(flota, 500);
+            Check("Susurrar a quien no existe se rechaza", a.SystemMessages.Any(m => m.Key == $"chat.{ResultCode.TargetNotFound}"));
+
+            // ── 5. /who y /help ─────────────────────────────────────────
+            a.SystemMessages.Clear();
+            a.SendNow(Opcode.ChatSend, new C2SChatSend { Channel = ChatChannel.Global, Text = "/who" });
+            a.SendNow(Opcode.ChatSend, new C2SChatSend { Channel = ChatChannel.Global, Text = "/help" });
+            await Run(flota, 500);
+
+            var who = a.SystemMessages.FirstOrDefault(m => m.Key == "chat.who");
+            Check("/who lista a los conectados",
+                who is not null && who.Args.Contains(a.Name) && who.Args.Contains(b.Name));
+            Check("/help lista los comandos", a.SystemMessages.Any(m => m.Key == "chat.help" && m.Args.Length > 0));
+
+            // ── 6. Comando de admin sin ser admin se rechaza ───────────
+            a.SystemMessages.Clear();
+            a.SendNow(Opcode.ChatSend, new C2SChatSend { Channel = ChatChannel.Global, Text = $"/kick {b.Name}" });
+            await Run(flota, 500);
+            Check("Un comando de admin sin serlo se rechaza", a.SystemMessages.Any(m => m.Key == $"chat.{ResultCode.NotAuthorized}"));
+            Check("...y no expulsa a nadie", !b.Kicked.HasValue);
+
+            Console.WriteLine($"\nusername de admin={admin.Username}");
+            Console.WriteLine(
+                "\nPara la fase de administración: concede el rol por SQL —ninguna cuenta puede\n" +
+                "autopromocionarse (FASE-11 §2 D6)— y reconecta con --chat-verify, reutilizando\n" +
+                "estas dos cuentas como objetivo de /teleport, /give y /kick (así la fase 2 sólo\n" +
+                "necesita registrar una cuenta nueva, la de /ban, y no vuelve a topar con el cupo\n" +
+                "de registros por IP que ya ha gastado esta fase 1).\n" +
+                $"  UPDATE accounts SET is_admin = true WHERE username = '{admin.Username}';\n" +
+                $"  dotnet run --project tools/Epimeteo.WorldBot -- --chat-verify {admin.Username},{a.Username},{b.Username}\n");
+
+            return Summarize();
+        }
+        finally
+        {
+            await a.DisposeAsync();
+            await b.DisposeAsync();
+            await admin.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Fase 2 del flujo de chat: reconecta con la cuenta ya promocionada a admin y con las dos de
+    /// <see cref="ChatSetupPhase"/> (objetivo de <c>/teleport</c>, <c>/give</c> y <c>/kick</c>) y
+    /// prueba los cuatro comandos de administrador. Sólo registra una cuenta nueva, la de
+    /// <c>/ban</c> —y la primera, antes de que nadie más conecte—: si el cupo de registros por IP
+    /// obliga a esperar (<c>AuthService</c>, 5/minuto), ningún otro bot se queda callado el
+    /// tiempo suficiente para que el barrido de inactividad (30 s) lo desconecte solo.
+    /// <code>dotnet run --project tools/Epimeteo.WorldBot -- --chat-verify admin,a,b [url]</code>
+    /// </summary>
+    private static async Task<int> ChatVerifyPhase(string url, GameMap map, string adminUsername, string aUsername, string bUsername)
+    {
+        var run = Guid.NewGuid().ToString("N")[..8];
+        var forBan = new Bot(url, $"chat_{run}_ban", $"ChatBan_{run}", map, lagMs: 0);
+
+        try
+        {
+            Console.WriteLine("· Fase 2: comandos de administrador");
+            await forBan.ConnectAsync(register: true);
+
+            var admin = new Bot(url, adminUsername, "no-hace-falta", map, lagMs: 0);
+            var forTeleportAndGive = new Bot(url, aUsername, "no-hace-falta", map, lagMs: 0);
+            var forKick = new Bot(url, bUsername, "no-hace-falta", map, lagMs: 0);
+            var flota = new List<Bot> { admin, forTeleportAndGive, forKick, forBan };
+
+            try
+            {
+                await admin.ConnectAsync(register: false);
+                await forTeleportAndGive.ConnectAsync(register: false);
+                await forKick.ConnectAsync(register: false);
+                await Run(flota, 500);
+
+                // ── 1. /teleport: mueve al admin junto al objetivo (D8) ────
+                admin.SendNow(Opcode.ChatSend, new C2SChatSend
+                {
+                    Channel = ChatChannel.Global, Text = $"/teleport {forTeleportAndGive.Name}",
+                });
+                await Run(flota, 800);
+
+                var distancia = MathF.Sqrt(Vec2.DistanceSquared(admin.ServerPos, forTeleportAndGive.ServerPos));
+                Check($"/teleport mueve al admin junto al objetivo ({distancia:F2} tiles)", distancia < 0.5f);
+
+                // ── 2. /give: mete un ítem de verdad en la bolsa del objetivo ──
+                forTeleportAndGive.LastInventoryChanges.Clear();
+                admin.SendNow(Opcode.ChatSend, new C2SChatSend
+                {
+                    Channel = ChatChannel.Global, Text = $"/give {forTeleportAndGive.Name} item.health_potion 2",
+                });
+                await Run(flota, 800);
+
+                var given = forTeleportAndGive.LastInventoryChanges.Values.FirstOrDefault(item => item?.DefKey == "item.health_potion");
+                Check($"/give mete el ítem de verdad en la bolsa del objetivo (cantidad {given?.Quantity})", given is { Quantity: >= 2 });
+
+                // ── 3. /kick: expulsa sin banear ────────────────────────────
+                admin.SendNow(Opcode.ChatSend, new C2SChatSend
+                {
+                    Channel = ChatChannel.Global, Text = $"/kick {forKick.Name} de prueba",
+                });
+                await Run(flota, 800);
+                Check($"/kick expulsa al objetivo ({forKick.Kicked})", forKick.Kicked == KickReason.Banned);
+
+                // ── 4. /ban: expulsa y deja la cuenta baneada de verdad ─────
+                admin.SendNow(Opcode.ChatSend, new C2SChatSend
+                {
+                    Channel = ChatChannel.Global, Text = $"/ban {forBan.Name} 1 de prueba",
+                });
+                await Run(flota, 800);
+                Check($"/ban expulsa al objetivo ({forBan.Kicked})", forBan.Kicked == KickReason.Banned);
+
+                await Run(flota, 500); // deja que el cierre del socket de forBan termine de verdad
+
+                var reconectando = new Bot(url, forBan.Username, "no-hace-falta", map, lagMs: 0);
+                var seRechazo = false;
+                try
+                {
+                    await reconectando.ConnectAsync(register: false);
+                }
+                catch (InvalidOperationException)
+                {
+                    seRechazo = true;
+                }
+                finally
+                {
+                    await reconectando.DisposeAsync();
+                }
+
+                Check("Tras el ban, la cuenta no puede volver a entrar", seRechazo);
+
+                Console.WriteLine(
+                    "\nPara comprobar la auditoría (los cuatro comandos de arriba dejaron fila):\n" +
+                    "  SELECT action, admin_name, target_name FROM admin_action_log ORDER BY at DESC LIMIT 4;\n");
+
+                return Summarize();
+            }
+            finally
+            {
+                await admin.DisposeAsync();
+                await forTeleportAndGive.DisposeAsync();
+                await forKick.DisposeAsync();
+            }
+        }
+        finally
+        {
+            await forBan.DisposeAsync();
         }
     }
 

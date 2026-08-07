@@ -34,7 +34,7 @@ internal static class TestWorld
     }
 
     /// <summary>Petición de entrada con valores razonables; el test cambia lo que le interese.</summary>
-    public static WorldJoinRequest Join(int entityId, Vec2 position, long characterId = 0, long gold = 0) => new(
+    public static WorldJoinRequest Join(int entityId, Vec2 position, long characterId = 0, long gold = 0, bool isAdmin = false) => new(
         entityId,
         characterId == 0 ? entityId : characterId,
         $"Jugador{entityId}",
@@ -55,7 +55,7 @@ internal static class TestWorld
         Gold: gold,
         Level: 1,
         Xp: 0,
-        StatPoints: 0);
+        StatPoints: 0, AccountId: entityId, IsAdmin: isAdmin);
 
     /// <summary>Input de movimiento en una dirección.</summary>
     public static MoveInput Input(uint seq, int dirX, int dirY) =>

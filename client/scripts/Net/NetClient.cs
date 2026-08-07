@@ -116,6 +116,9 @@ public partial class NetClient : Node
     /// <summary>Se dispara al entrar o salir de combate PvP (bloquea el logout limpio).</summary>
     public event Action<S2CCombatFlagUpdate>? CombatFlagUpdateReceived;
 
+    /// <summary>Se dispara con cada línea de chat retransmitida (Fase 11).</summary>
+    public event Action<S2CChatMessage>? ChatMessageReceived;
+
     /// <summary>Estado actual de la conexión.</summary>
     public ConnectionStatus Status { get; private set; } = ConnectionStatus.Disconnected;
 
@@ -420,6 +423,13 @@ public partial class NetClient : Node
     public void SendAllocateStatPoint(StatKind stat) =>
         Send(Opcode.AllocateStatPoint, new C2SAllocateStatPoint { Stat = stat });
 
+    /// <summary>
+    /// Un mensaje de chat, o un comando de barra si empieza por <c>/</c> — el servidor decide cuál
+    /// es (FASE-11 §2 D1/D3), el cliente sólo manda texto y el canal elegido.
+    /// </summary>
+    public void SendChatSend(ChatChannel channel, string text) =>
+        Send(Opcode.ChatSend, new C2SChatSend { Channel = channel, Text = text });
+
     private void PumpIncoming()
     {
         var now = ServerClock.NowMs;
@@ -593,6 +603,14 @@ public partial class NetClient : Node
                 if (FrameCodec.TryDecodePayload<S2CSystemMessage>(frame, out var sysMsg) && sysMsg is not null)
                 {
                     SystemMessageReceived?.Invoke(sysMsg);
+                }
+
+                break;
+
+            case Opcode.ChatMessage:
+                if (FrameCodec.TryDecodePayload<S2CChatMessage>(frame, out var chatMsg) && chatMsg is not null)
+                {
+                    ChatMessageReceived?.Invoke(chatMsg);
                 }
 
                 break;

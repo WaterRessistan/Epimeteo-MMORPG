@@ -29,6 +29,8 @@ namespace Epimeteo.Server.World;
 /// <param name="Level">Nivel guardado.</param>
 /// <param name="Xp">Experiencia guardada (Fase 9).</param>
 /// <param name="StatPoints">Puntos de stat sin gastar (Fase 10).</param>
+/// <param name="AccountId">Cuenta dueña del personaje (Fase 11: hace falta para <c>/ban</c>).</param>
+/// <param name="IsAdmin">Si la cuenta puede usar los comandos de admin del chat (FASE-11 §2 D6).</param>
 public sealed record WorldJoinRequest(
     int EntityId,
     long CharacterId,
@@ -50,4 +52,6 @@ public sealed record WorldJoinRequest(
     long Gold,
     int Level,
     long Xp,
-    int StatPoints);
+    int StatPoints,
+    long AccountId,
+    bool IsAdmin);
