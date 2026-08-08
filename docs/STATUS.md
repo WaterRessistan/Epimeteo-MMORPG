@@ -919,6 +919,15 @@ Cuando exista una build real: copiarla a `client-build/`, `dotnet run --project
 tools/Epimeteo.ReleaseTool -- client-build` para el manifiesto, y `deploy/publish.sh` ya la
 sincroniza a producción sola.
 
+**Restricción real a tener en cuenta al planificar esa build:** Godot 4 con C#/.NET (lo que usa
+este cliente, no GDScript) **no soporta exportar a Web/HTML5** — el runtime de .NET no corre
+dentro del WebAssembly que genera Godot. No es una tarea sin hacer, es una limitación del motor.
+Jugar por navegador exigiría reescribir la lógica de cliente en GDScript, que no es el stack
+actual y no es una decisión para tomar de pasada. El roadmap (`docs/03`) ya sólo habla de
+Windows/Linux, coherente con esto. El jugador final acabará con un `.exe`/binario nativo
+descargado por `tools/Epimeteo.Launcher` (o una versión gráfica del mismo mecanismo) — nunca con
+Godot instalado.
+
 **Fase 14 — Escalado multi-zona · Opus · _opcional_, sigue sin tocarse.**
 `docs/03-roadmap-fases.md` dice explícitamente **"no la hagas por defecto"**: con el tick medio en
 **11 µs** sobre un presupuesto de 50 000 µs (Fase 13), no hay nada que escalar todavía.
@@ -962,6 +971,14 @@ Recordatorio de entorno: este servidor de producción ya tiene `dotnet`, Postgre
 `epimeteo` listos; no hace falta repetir la instalación en próximas sesiones aquí. La contraseña
 de desarrollo vive sólo en `server/Epimeteo.Server/appsettings.Development.json` (gitignored) —
 si se pierde, se resetea con `sudo -u postgres psql -c "ALTER ROLE epimeteo WITH PASSWORD '...';"`.
+Esta misma máquina es el servidor de producción real (no hay una máquina de dev separada): los
+`sudo systemctl`/`nginx -t`/`publish.sh` de cada fase tocan el juego que de verdad está sirviendo.
+
+**Git:** `origin/main` en GitHub (`WaterRessistan/Epimeteo-MMORPG`) está al día con `main` local a
+fecha de la Fase 15 (`32a53a5`). Esta máquina **no tiene credenciales configuradas para hacer
+`git push`** (ni `gh` CLI, ni credential helper, ni clave SSH de salida — el remoto es HTTPS). Cada
+vez que haga falta subir commits nuevos, Mario tiene que pasar un Personal Access Token en el
+momento; no se guarda en ningún fichero de configuración entre sesiones.
 
 ### Comandos útiles
 
