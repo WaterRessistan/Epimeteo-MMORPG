@@ -758,25 +758,83 @@ Detalle completo en `docs/fases/FASE-11-chat-social.md` §11.
    motivo y detalles correctos); `chat_log` con las líneas de la fase 1; `accounts.status`/
    `banned_until`/`ban_reason` reales para la cuenta baneada.
 
+## Hecho en la Fase 12 — Pipeline de contenido y mapas
+
+Plan completo en `docs/fases/FASE-12-contenido-mapas.md` (con una §11 al cierre sobre lo que pasó
+de verdad). **El alcance de esta fase se recortó a propósito, confirmado con el usuario al
+empezar:** el roadmap pide "integración real de los packs CC0", pero CLAUDE.md §5 prohíbe
+explícitamente generar o descargar assets sin que se pida — así que esta fase construyó toda la
+infraestructura de contenido y mapas, y **ningún asset real ni placeholder generado**.
+`client/assets/ATTRIBUTIONS.md` queda como plantilla vacía hasta que alguien traiga packs de
+verdad.
+
+- `AtlasRegion`/`AtlasRegistryLoader`/`AtlasRegistry` (`Shared/Data`, puros y testeados):
+  `client/assets/atlas_registry.json` — vacío por ahora — mapea una clave a una región de una
+  imagen. Las entidades se buscan por su propio `defKey` (jugador, monstruo, NPC ya son 1:1 con
+  su aspecto, no hace falta un campo nuevo); los ítems ganan `visualKey` en `ItemDefinition`,
+  opcional y con el propio `key` como valor por defecto — para cuando convenga que dos variantes
+  compartan un mismo sprite provisional.
+- `WorldRenderer` consulta el registro antes de dibujar el rectángulo de siempre y cae a él si no
+  hay entrada o el fichero no existe en disco — hoy, siempre: cero sprites reales, cero rutas
+  hardcodeadas en la lógica (CLAUDE.md §5).
+- `tools/Epimeteo.ContentValidator` (proyecto nuevo): carga `content/` con los mismos catálogos
+  que el servidor real y comprueba las referencias cruzadas que ningún catálogo mira por sí solo
+  (kit inicial de una clase, botín de un monstruo, slots de tienda, semilla/cosecha de un cultivo,
+  clase de una habilidad, monstruo de un punto de spawn). Código 0 si todo resuelve, 1 y el
+  detalle si no.
+- `content/maps/map.forest.json` y `map.mountain.json`: dos zonas exteriores nuevas (48×48, una
+  entrada segura + una región `pvp` para el resto, un par de puntos de monstruos cada una) —
+  `GameWorld` ya crea una `Zone` por cada mapa de `MapCatalog.All` desde la Fase 4, así que cargan
+  y se pueblan solas sin tocar el motor.
+
+### Un hallazgo real, en los tests, no en el servidor
+
+Añadir mapas rompió tres tests de `WorldTests.cs` que llevaban en verde desde la Fase 4: buscaban
+al jugador de prueba con `world.Zones.First().FindBySession(1)`, asumiendo sin querer que sólo
+había una zona — cierto hasta esta fase. Con tres mapas, `.First()` deja de apuntar
+necesariamente a `map.village` y el jugador de prueba (que sí entra ahí) podía no estar en la
+zona que tocara. No es un fallo de `GameWorld`: es la clase de suposición que sólo se nota cuando
+deja de ser cierta, justo lo que esta fase cambiaba a propósito. Arreglado buscando la zona por
+`Map.Key`, no por posición. Detalle completo en `docs/fases/FASE-12-contenido-mapas.md` §11.
+
+### Verificación Fase 12 (esta sesión, contra el servicio de producción real)
+
+1. ✅ `dotnet build` sin warnings; `dotnet test`: **163/163 compartidos + 276/276 servidor**.
+2. ✅ `dotnet build client/Epimeteo.Client.csproj`: sin warnings. UI no ejercitada a mano.
+3. ✅ `tools/Epimeteo.ContentValidator`: 0 problemas contra el `content/` real y contra el
+   desplegado en producción; detecta correctamente una referencia rota a propósito (probado y
+   revertido).
+4. ✅ Desplegado con `deploy/publish.sh`. `/status` en producción: `world.zones` subió de 1 a
+   **3**, `world.monsters` a **12** (los 6 de siempre en `map.village` más 3 en cada zona nueva) —
+   los `MonsterSpawner` de las zonas nuevas poblaron sus puntos solos.
+
+**Límite honesto:** sin un sistema de transición entre mapas (fuera de alcance a propósito, §1 del
+plan), ningún personaje de verdad puede llegar todavía a las zonas nuevas — se comprueba que
+existen, cargan y se pueblan, no que se puedan visitar.
+
 ## Siguiente sesión
 
-**Fase 12 — Pipeline de contenido y mapas · Sonnet.** Siguiente en `docs/03-roadmap-fases.md`
-(mismo modelo). Integración real de los packs CC0 (`ATTRIBUTIONS.md` cumplimentado), atlas
-registry (`visualKey` del JSON → región de atlas, sin rutas en la lógica), mapa del pueblo
-completo + 2 zonas exteriores, y `tools/Epimeteo.ContentValidator` verificando que toda `def_key`
-referenciada existe.
+**Fase 13 — Observabilidad y anticheat · Opus.** Siguiente en `docs/03-roadmap-fases.md` —
+**cambio de modelo** (CLAUDE.md §6: rate limiting completo, detección de anomalías y seguridad
+son trabajo de diseño, no de implementación sobre lo ya cerrado). Serilog estructurado, métricas
+Prometheus (tiempo de tick, jugadores, mensajes/s, latencia de BD), rate limiting completo por
+familia de opcode con *strikes* y desconexión, detectores (velocidad, teletransporte, alcance
+imposible, cadencia de acciones, anomalías de oro), y un `/status` autenticado con alertas.
 
 **Pendiente aparte, en cuanto haya una máquina con entorno gráfico:** abrir `client/project.godot`
 en Godot 4.5 y comprobar a mano lo que este servidor headless no puede: dos clientes viéndose
 mover (Fase 4), el drag & drop del inventario (`I`, Fase 6), la tienda (`E`, Fase 7), el combate
-(espacio, Fase 9), la barra de habilidades (teclas 1-3) y el panel de stats (`K`, Fase 10), y
-ahora el chat (`Enter`, `T`, Fase 11). El cliente puede apuntar a
+(espacio, Fase 9), la barra de habilidades (teclas 1-3) y el panel de stats (`K`, Fase 10), y el
+chat (`Enter`, `T`, Fase 11). El cliente puede apuntar a
 `wss://epimeteo.waterressistan.duckdns.org/ws` en vez de `127.0.0.1`.
 
 **Pendiente de decidir, no técnico:** los datos de prueba acumulados en la BD (cuentas `Bot*`/
 `smoke_*`/`farm_*`/`pvp_*`/`prog_*`/`chat_*` de `SmokeClient`/`WorldBot` a lo largo de las
-Fases 1–11, incluidas varias ya baneadas por las pruebas de `/ban`) — si el juego se va a anunciar
-de verdad, alguien tiene que decidir si se limpian antes. Esta sesión no ha borrado nada.
+Fases 1–12, incluidas varias ya baneadas por las pruebas de `/ban`) — si el juego se va a anunciar
+de verdad, alguien tiene que decidir si se limpian antes. Esta sesión no ha borrado nada. Y, nueva
+de esta fase: **en cuanto alguien traiga packs de arte CC0 reales**, rellenar
+`client/assets/ATTRIBUTIONS.md` y las entradas de `client/assets/atlas_registry.json` — la
+infraestructura ya está lista, sólo falta el contenido.
 
 **Verificación real que sólo puede hacer un humano:** conectar desde un móvil en datos 4G (no
 en la red del servidor) a `wss://epimeteo.waterressistan.duckdns.org/ws` con el cliente Godot, en

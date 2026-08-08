@@ -62,6 +62,7 @@ public static class ItemLoader
         {
             Key = raw.Key,
             DisplayName = raw.DisplayName ?? raw.Key,
+            VisualKey = raw.VisualKey ?? raw.Key,
             Type = type,
             MaxStack = raw.MaxStack,
             EquipCategory = equipCategory,
@@ -119,6 +120,8 @@ public static class ItemLoader
         public string? Key { get; init; }
 
         public string? DisplayName { get; init; }
+
+        public string? VisualKey { get; init; }
 
         public string? Type { get; init; }
 

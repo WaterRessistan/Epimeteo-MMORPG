@@ -161,6 +161,41 @@ public sealed class WorldTests
         Assert.Contains(world.Zones, zone => zone.Map.Key == "map.village");
     }
 
+    /// <summary>
+    /// Las dos zonas exteriores nuevas (Fase 12) cargan como cualquier otro mapa —
+    /// <c>GameWorld</c> ya crea una <c>Zone</c> por cada uno desde la Fase 4, genérico— con una
+    /// región segura junto al spawn y otra <c>pvp</c> para el resto, mismo patrón que
+    /// <c>campo_norte</c> en <c>map.village</c>.
+    /// </summary>
+    [Theory]
+    [InlineData("map.forest")]
+    [InlineData("map.mountain")]
+    public void LasZonasExterioresNuevas_CarganConSuRegionSeguraYSuRegionPvp(string mapKey)
+    {
+        var (world, _, _) = Build();
+
+        var zone = world.Zones.Single(z => z.Map.Key == mapKey);
+        Assert.Contains(zone.Map.Regions.Regions, r => r.Flags.HasFlag(ZoneFlags.Safe));
+        Assert.Contains(zone.Map.Regions.Regions, r => r.Flags.HasFlag(ZoneFlags.Pvp));
+    }
+
+    /// <summary>El barrido va a 1 Hz (Fase 9): hace falta un segundo entero de ticks para que el spawner actúe.</summary>
+    [Theory]
+    [InlineData("map.forest")]
+    [InlineData("map.mountain")]
+    public void LasZonasExterioresNuevas_ElSpawnerLasPuebla(string mapKey)
+    {
+        var (world, _, _) = Build();
+
+        for (long tick = 1; tick <= SimulationConstants.TickRate; tick++)
+        {
+            world.Tick(tick, tick * SimulationConstants.TickDtMs);
+        }
+
+        var zone = world.Zones.Single(z => z.Map.Key == mapKey);
+        Assert.True(zone.Monsters.Count > 0, $"el spawner de {mapKey} tendría que haber poblado sus puntos");
+    }
+
     [Fact]
     public void UnJoin_MaterializaLaEntidadEnElTickSiguiente()
     {
@@ -198,7 +233,7 @@ public sealed class WorldTests
         inbox.PostControl(new PlayerJoinCommand(peer, VillageJoin(1, new Vec2(48.5f, 60.5f), 100, gold: 250)));
         world.Tick(1, 50);
 
-        var player = world.Zones.First().FindBySession(1);
+        var player = world.Zones.First(z => z.Map.Key == "map.village").FindBySession(1);
         Assert.NotNull(player);
         Assert.Equal(250, player.Gold);
     }
@@ -235,7 +270,7 @@ public sealed class WorldTests
         inbox.PostControl(new PlayerJoinCommand(peer, VillageJoin(1, new Vec2(48.5f, 60.5f), 100)));
         world.Tick(1, 50);
 
-        var player = world.Zones.First().FindBySession(1);
+        var player = world.Zones.First(z => z.Map.Key == "map.village").FindBySession(1);
         Assert.NotNull(player);
         player.Hp = 37;
         player.Xp = 1234;
@@ -263,7 +298,7 @@ public sealed class WorldTests
             world.Tick(1 + i, (1 + i) * 50);
         }
 
-        var player = world.Zones.First().FindBySession(1);
+        var player = world.Zones.First(z => z.Map.Key == "map.village").FindBySession(1);
         Assert.NotNull(player);
         Assert.Equal(60.5f - (10 * 0.2f), player.State.Pos.Y, 1e-4f);
     }

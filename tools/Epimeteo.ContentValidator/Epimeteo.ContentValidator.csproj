@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Epimeteo.ContentValidator</RootNamespace>
+    <EpimeteoStrict>true</EpimeteoStrict>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\shared\Epimeteo.Shared\Epimeteo.Shared.csproj" />
+    <ProjectReference Include="..\..\server\Epimeteo.Server\Epimeteo.Server.csproj" />
+  </ItemGroup>
+
+</Project>

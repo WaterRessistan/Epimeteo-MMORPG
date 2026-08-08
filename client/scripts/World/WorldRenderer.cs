@@ -40,10 +40,15 @@ public partial class WorldRenderer : Node2D
     private static readonly Color NameColor = new(0.95f, 0.95f, 0.95f);
     private static readonly Color NameShadow = new(0f, 0f, 0f, 0.7f);
 
-    private readonly List<(Vec2 Pos, Facing Facing, byte Palette, string Name, bool IsLocal)> _drawList = [];
+    /// <summary>Dónde vive el manifiesto del atlas (FASE-12 §2 D1). Vacío mientras no haya arte real.</summary>
+    private const string AtlasManifestPath = "res://assets/atlas_registry.json";
+
+    private readonly List<(Vec2 Pos, Facing Facing, byte Palette, string DefKey, string Name, bool IsLocal)> _drawList = [];
+    private readonly Dictionary<string, Texture2D> _atlasTextureCache = [];
 
     private GameMap? _map;
     private Font? _font;
+    private AtlasRegistry _atlas = new(new Dictionary<string, AtlasRegion>());
 
     /// <summary>Entidades remotas que hay que pintar. La escena es la dueña; aquí sólo se leen.</summary>
     public IReadOnlyCollection<RemoteEntity> Remotes { get; set; } = [];
@@ -54,8 +59,11 @@ public partial class WorldRenderer : Node2D
     /// <summary>Nombre del personaje local, para pintarlo encima como el de los demás.</summary>
     public string LocalName { get; set; } = string.Empty;
 
-    /// <summary>Paleta del personaje local.</summary>
+    /// <summary>Paleta del personaje local: cae al rectángulo de color si el atlas no resuelve nada para <see cref="LocalDefKey"/>.</summary>
     public byte LocalPalette { get; set; }
+
+    /// <summary>Clave de clase del personaje local (FASE-12 §2 D2: las entidades se buscan en el atlas por <c>defKey</c>).</summary>
+    public string LocalDefKey { get; set; } = string.Empty;
 
     /// <summary>Fija el mapa a dibujar. Redibuja de inmediato.</summary>
     public void SetMap(GameMap map)
@@ -65,7 +73,39 @@ public partial class WorldRenderer : Node2D
     }
 
     /// <inheritdoc />
-    public override void _Ready() => _font = ThemeDB.FallbackFont;
+    public override void _Ready()
+    {
+        _font = ThemeDB.FallbackFont;
+        _atlas = LoadAtlasRegistry();
+    }
+
+    /// <summary>
+    /// Lee el manifiesto (FASE-12 §2 D1). Puede no existir todavía en cualquier build —el registro
+    /// vacío es el estado normal mientras no haya arte real— así que la ausencia no es un error,
+    /// a diferencia de <c>ClientContent.LoadMap</c> con un mapa que sí hace falta que exista.
+    /// </summary>
+    private static AtlasRegistry LoadAtlasRegistry()
+    {
+        if (!Godot.FileAccess.FileExists(AtlasManifestPath))
+        {
+            return new AtlasRegistry(new Dictionary<string, AtlasRegion>());
+        }
+
+        using var file = Godot.FileAccess.Open(AtlasManifestPath, Godot.FileAccess.ModeFlags.Read);
+        var json = file.GetAsText();
+
+        try
+        {
+            return new AtlasRegistry(AtlasRegistryLoader.Parse(json, AtlasManifestPath));
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Un manifiesto roto no debe tirar el cliente entero por algo puramente estético
+            // (D3): se avisa y se sigue con el registro vacío, como si no existiera.
+            GD.PushError($"atlas_registry.json inválido, se ignora: {ex.Message}");
+            return new AtlasRegistry(new Dictionary<string, AtlasRegion>());
+        }
+    }
 
     /// <inheritdoc />
     public override void _Draw()
@@ -131,12 +171,12 @@ public partial class WorldRenderer : Node2D
 
         foreach (var remote in Remotes)
         {
-            _drawList.Add((remote.State.Pos, remote.State.Facing, remote.PaletteIndex, remote.Name, false));
+            _drawList.Add((remote.State.Pos, remote.State.Facing, remote.PaletteIndex, remote.DefKey, remote.Name, false));
         }
 
         if (Local is not null)
         {
-            _drawList.Add((Local.RenderPos, Local.Current.Facing, LocalPalette, LocalName, true));
+            _drawList.Add((Local.RenderPos, Local.Current.Facing, LocalPalette, LocalDefKey, LocalName, true));
         }
 
         // Y-sort: quien tiene los pies más abajo se dibuja encima, que es lo que da sensación de
@@ -145,18 +185,26 @@ public partial class WorldRenderer : Node2D
 
         foreach (var entity in _drawList)
         {
-            DrawEntity(entity.Pos, entity.Facing, entity.Palette, entity.Name, entity.IsLocal);
+            DrawEntity(entity.Pos, entity.Facing, entity.Palette, entity.DefKey, entity.Name, entity.IsLocal);
         }
     }
 
-    private void DrawEntity(Vec2 pos, Facing facing, byte palette, string name, bool isLocal)
+    private void DrawEntity(Vec2 pos, Facing facing, byte palette, string defKey, string name, bool isLocal)
     {
         // La posición es la de los pies; el cuerpo crece hacia arriba.
         var footX = pos.X * TilePixels;
         var footY = pos.Y * TilePixels;
         var body = new Rect2(footX - (BodyWidth / 2f), footY - BodyHeight, BodyWidth, BodyHeight);
 
-        DrawRect(body, Palettes[palette % Palettes.Length]);
+        var (texture, region) = ResolveTexture(defKey);
+        if (texture is not null && region is not null)
+        {
+            DrawTextureRectRegion(texture, body, new Rect2(region.X, region.Y, region.Width, region.Height));
+        }
+        else
+        {
+            DrawRect(body, Palettes[palette % Palettes.Length]);
+        }
 
         if (isLocal)
         {
@@ -188,5 +236,33 @@ public partial class WorldRenderer : Node2D
         };
 
         DrawRect(mark, FacingMark);
+    }
+
+    /// <summary>
+    /// Busca <paramref name="defKey"/> en el atlas y, si además el fichero existe de verdad en
+    /// disco, la textura ya cargada (con caché por ruta: varias entidades pueden compartir la
+    /// misma imagen). <c>(null, null)</c> en cualquier otro caso — ni una clave sin registrar ni
+    /// un registro que apunta a un fichero que no está son un error, sólo el estado normal
+    /// mientras no haya arte real (FASE-12 §2 D3).
+    /// </summary>
+    private (Texture2D? Texture, AtlasRegion? Region) ResolveTexture(string defKey)
+    {
+        if (string.IsNullOrEmpty(defKey) || !_atlas.TryGet(defKey, out var region))
+        {
+            return (null, null);
+        }
+
+        if (!_atlasTextureCache.TryGetValue(region.AtlasPath, out var texture))
+        {
+            if (!ResourceLoader.Exists(region.AtlasPath))
+            {
+                return (null, null);
+            }
+
+            texture = GD.Load<Texture2D>(region.AtlasPath);
+            _atlasTextureCache[region.AtlasPath] = texture;
+        }
+
+        return (texture, region);
     }
 }

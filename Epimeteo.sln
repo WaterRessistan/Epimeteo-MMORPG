@@ -18,6 +18,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Epimeteo.Server.Tests", "te
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Epimeteo.WorldBot", "tools\Epimeteo.WorldBot\Epimeteo.WorldBot.csproj", "{17BFE925-ABB4-4FF2-9B2F-DF1E0F74D1AD}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Epimeteo.ContentValidator", "tools\Epimeteo.ContentValidator\Epimeteo.ContentValidator.csproj", "{23E8DA05-5838-470E-A7DE-E7E4E95B570C}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -48,6 +50,10 @@ Global
 		{17BFE925-ABB4-4FF2-9B2F-DF1E0F74D1AD}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{17BFE925-ABB4-4FF2-9B2F-DF1E0F74D1AD}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{17BFE925-ABB4-4FF2-9B2F-DF1E0F74D1AD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{23E8DA05-5838-470E-A7DE-E7E4E95B570C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{23E8DA05-5838-470E-A7DE-E7E4E95B570C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{23E8DA05-5838-470E-A7DE-E7E4E95B570C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{23E8DA05-5838-470E-A7DE-E7E4E95B570C}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -56,5 +62,6 @@ Global
 		{20A2966E-3E74-49FB-AEE9-D1B7A350EE0B} = {40B2445E-2098-4612-9B47-181C44498975}
 		{5AA1AE0C-1442-4BDB-825C-7B5BB59591A4} = {542CD6ED-D7A4-477E-BA29-B9F44BAF65CF}
 		{17BFE925-ABB4-4FF2-9B2F-DF1E0F74D1AD} = {40B2445E-2098-4612-9B47-181C44498975}
+		{23E8DA05-5838-470E-A7DE-E7E4E95B570C} = {40B2445E-2098-4612-9B47-181C44498975}
 	EndGlobalSection
 EndGlobal

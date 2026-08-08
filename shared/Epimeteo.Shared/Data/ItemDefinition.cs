@@ -14,6 +14,14 @@ public sealed record ItemDefinition
 
     public required string DisplayName { get; init; }
 
+    /// <summary>
+    /// Clave que resuelve el <c>AtlasRegistry</c> del cliente para el sprite (FASE-12 §2 D2). Por
+    /// defecto es <see cref="Key"/> — la mayoría de ítems no necesitan compartir dibujo con otro—,
+    /// pero puede apuntar a uno distinto cuando sí lo necesiten (p. ej. dos espadas provisionales
+    /// con el mismo placeholder hasta que haya arte real de cada una).
+    /// </summary>
+    public required string VisualKey { get; init; }
+
     public required ItemType Type { get; init; }
 
     /// <summary>Tamaño máximo de pila en un slot. <c>1</c> = no apilable.</summary>

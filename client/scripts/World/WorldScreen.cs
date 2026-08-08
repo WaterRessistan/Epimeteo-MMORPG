@@ -123,6 +123,7 @@ public partial class WorldScreen : Node2D
         _renderer.Remotes = _remotes.Values;
         _renderer.LocalName = _net.SelectedCharacter?.Name ?? string.Empty;
         _renderer.LocalPalette = _net.SelectedCharacter?.PaletteIndex ?? 0;
+        _renderer.LocalDefKey = _net.SelectedCharacter?.ClassKey ?? string.Empty;
         _camera.FollowTile(_local.RenderPos);
 
         _net.SnapshotReceived += OnSnapshot;
