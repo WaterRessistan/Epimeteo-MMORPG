@@ -2,6 +2,7 @@ using System.Net;
 using Epimeteo.Server;
 using Epimeteo.Server.Content;
 using Epimeteo.Server.Farm;
+using Epimeteo.Server.Files;
 using Epimeteo.Server.Inventory;
 using Epimeteo.Server.Net;
 using Epimeteo.Server.Observability;
@@ -66,6 +67,7 @@ try
     builder.Services.AddSingleton<SessionTokenService>();
     builder.Services.AddSingleton<AuthService>();
     var contentRoot = ContentPaths.ResolveContentRoot();
+    var releaseRoot = ReleasePaths.ResolveReleaseRoot();
     builder.Services.AddSingleton(new ClassCatalog(contentRoot));
     builder.Services.AddSingleton(new MapCatalog(contentRoot));
     builder.Services.AddSingleton(new ItemCatalog(contentRoot));
@@ -180,7 +182,8 @@ try
             ? path.Equals("/ws", StringComparison.Ordinal)
             : path.Equals("/version", StringComparison.Ordinal)
                 || path.Equals("/status", StringComparison.Ordinal)
-                || path.Equals("/metrics", StringComparison.Ordinal);
+                || path.Equals("/metrics", StringComparison.Ordinal)
+                || path.StartsWithSegments("/files", StringComparison.Ordinal);
 
         if (!allowed)
         {
@@ -252,6 +255,18 @@ try
         tickRate = opts.TickRate,
         snapshotRate = opts.SnapshotRate,
     }));
+
+    // La build del cliente (FASE-15 §2 D3): pública, sin token, como /version — un jugador que
+    // todavía no tiene el juego instalado no puede autenticarse para descargarlo. `path` es
+    // entrada no confiable; toda la validación de traversal vive en SafeFileResolver, aparte y
+    // testeable, no aquí mezclada con el endpoint.
+    app.MapGet("/files/{**path}", (string? path) =>
+    {
+        var resolved = SafeFileResolver.Resolve(releaseRoot, path);
+        return resolved is null
+            ? Results.NotFound()
+            : Results.File(resolved, "application/octet-stream");
+    });
 
     app.MapGet("/status", (
         SessionManager sessions, GameLoop loop, GameWorld world,

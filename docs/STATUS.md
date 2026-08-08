@@ -867,17 +867,66 @@ tráfico real de jugadores** porque todavía no hay ninguno. Están puestos para
 positivos, no para atrapar a nadie con eficacia; `anomaly_log` existe para apretarlos con datos
 cuando los haya.
 
+## Hecho en la Fase 15 (primera mitad) — Launcher/parcheador
+
+`docs/03` mete en una sola fase tres cosas de naturaleza distinta: launcher/parcheador (servidor +
+herramienta de consola), y audio/UX/opciones/builds de distribución (cliente Godot). **Esta
+sesión sólo hizo la primera**, decisión tomada con el usuario antes de escribir el plan: este
+servidor no tiene Godot instalado y nunca ha tenido entorno gráfico, así que la UI interactiva no
+se puede verificar, y el audio choca con la política de assets de CLAUDE.md §5 (nada de generar
+o descargar sin que se pida). Plan completo, con una §6 al cierre, en
+`docs/fases/FASE-15-pulido-release.md`.
+
+- `client-build/`: directorio nuevo para la salida de una build de Godot (aún no existe ninguna
+  real; sólo un `README.md` marcador). No se llama `release/` — ese nombre ya caía en un patrón
+  `.gitignore` genérico heredado de la plantilla de .NET (`[Rr]elease/`, para `bin/Release/`) y el
+  propio marcador se habría quedado sin versionar sin que nadie se diera cuenta.
+- `tools/Epimeteo.ReleaseTool`: genera `client-build/manifest.json` (SHA-256 + tamaño por
+  fichero, rutas siempre con `/`).
+- `/files/{**path}` en el servidor: público, sin token, en la lista blanca del puerto HTTP junto a
+  `/version`. `Files/SafeFileResolver.cs` (con 12 tests) valida la ruta pedida contra path
+  traversal en dos capas independientes, aparte del endpoint para poder probarla sin levantar
+  Postgres.
+- `tools/Epimeteo.Launcher`: descarga lo que falte o haya cambiado (verificando el hash tras
+  descargar antes de mover el fichero final), y **borra** del directorio local lo que ya no está
+  en el manifiesto — un parcheador que sólo añade dejaría basura de cada build anterior.
+- `deploy/nginx-epimeteo.conf`: `location /files/` nueva, parcheada quirúrgicamente sobre el
+  fichero instalado (igual que en la Fase 13, nunca sobrescribiendo por las líneas de Certbot).
+
+**Hallazgo real de esta sesión, con impacto:** el primer despliegue **tumbó producción varios
+segundos** (bucle de reinicio, WebSocket incluido) porque `deploy/publish.sh` sincronizaba
+`content/` a `/opt/epimeteo` pero nunca aprendió a hacer lo mismo con `client-build/`, y el
+servidor **lanza a propósito** si no encuentra ese directorio. `dotnet run` en este repositorio no
+lo detecta (encuentra `Epimeteo.sln` subiendo y resuelve igual); sólo se ve corriendo el binario
+publicado tal cual queda en producción. Arreglado extendiendo `publish.sh` con el mismo patrón de
+`rsync` + enlace simbólico que ya tenía `content/`, y verificado con un segundo despliegue que sí
+levantó limpio. Detalle completo en FASE-15 §6.
+
+**Verificado contra producción:** el launcher completo (descarga inicial, no-op, reemplazo tras
+cambio, borrado de sobrantes) contra `https://epimeteo.waterressistan.duckdns.org` de verdad;
+varias formas de traversal (`..` literal → 404; `..%2f`/`%2e%2e` codificados → 400, los rechaza
+Kestrel antes incluso de llegar al resolver — capa extra no planeada); `/status` y `/metrics`
+siguen en 404 (el hallazgo de la Fase 13 no se reabrió). 163/163 + 317/317 tests.
+
 ## Siguiente sesión
 
-**Fase 14 — Escalado multi-zona · Opus · _opcional_.** `docs/03-roadmap-fases.md` dice
-explícitamente **"no la hagas por defecto"**: sin un objetivo de jugadores concreto, un solo
-proceso con las zonas ya aisladas aguanta de sobra, y sólo se abre si las métricas de la Fase 13
-muestran tick times que se disparen. Con el tick medio en **11 µs** sobre un presupuesto de
-50 000 µs, no hay nada que escalar. **Lo razonable es saltar a la Fase 15 — Pulido y release ·
-Sonnet** (audio, UX, opciones, launcher/parcheador, build de distribución) y dejar la 14 para si
-algún día hace falta de verdad.
+**Fase 15 (segunda mitad) — Audio, UX, opciones y builds de distribución · Sonnet · necesita
+Godot.** Pendiente hasta que haya una máquina con entorno gráfico: menú de opciones, remapeo de
+teclas, pantalla completa, transiciones, audio (una vez haya assets reales o se pida generarlos
+explícitamente, CLAUDE.md §5), y las builds de exportación de Windows/Linux con la primera versión
+etiquetada — que además necesitan los *export templates* de Godot instalados, que tampoco están.
+Cuando exista una build real: copiarla a `client-build/`, `dotnet run --project
+tools/Epimeteo.ReleaseTool -- client-build` para el manifiesto, y `deploy/publish.sh` ya la
+sincroniza a producción sola.
 
-**Operación, nuevo de esta fase:** `Epimeteo:MetricsToken` ya está configurado en
+**Fase 14 — Escalado multi-zona · Opus · _opcional_, sigue sin tocarse.**
+`docs/03-roadmap-fases.md` dice explícitamente **"no la hagas por defecto"**: con el tick medio en
+**11 µs** sobre un presupuesto de 50 000 µs (Fase 13), no hay nada que escalar todavía.
+
+**Operación, nuevo de esta fase:** `/files/` es público desde internet, como `/version` —
+cualquiera puede descargar la build del cliente sin autenticarse, que es lo que tiene que pasar
+para que alguien pueda instalar el juego. `/status` y `/metrics` siguen exigiendo
+`Epimeteo:MetricsToken` (Fase 13); `Epimeteo:MetricsToken` ya está configurado en
 `/opt/epimeteo/app/appsettings.Production.json` (fuera de git, permisos 600). Para consultar
 `/status` o `/metrics` desde fuera de la máquina, **túnel SSH al 5101** — nginx no da salida a esas
 rutas a propósito. Queda pendiente, si alguien quiere gráficas: montar un Prometheus que haga

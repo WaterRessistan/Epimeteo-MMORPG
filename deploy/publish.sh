@@ -10,6 +10,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEPLOY_ROOT="/opt/epimeteo"
 APP_DIR="$DEPLOY_ROOT/app"
 CONTENT_DIR="$DEPLOY_ROOT/content"
+RELEASE_DIR="$DEPLOY_ROOT/client-build"
 PUBLISH_DIR="$(mktemp -d)"
 trap 'rm -rf "$PUBLISH_DIR"' EXIT
 
@@ -61,6 +62,19 @@ sudo rsync -a --delete "$REPO_ROOT/content"/ "$CONTENT_DIR"/
 # El servidor busca content/ junto al binario (Content/ContentPaths.cs): un enlace, no una copia
 # más, para no duplicar los ficheros ni tener que recordar sincronizar dos veces.
 sudo ln -sfn "$CONTENT_DIR" "$APP_DIR/content"
+
+echo "==> Sincronizando client-build/ (build del cliente que sirve /files/, FASE-15)"
+# manifest.json no se versiona (es derivado, se regenera con Epimeteo.ReleaseTool) así que
+# --delete no lo protege como a appsettings.Production.json: se regenera aquí mismo tras
+# sincronizar, no antes, para que describa exactamente lo que acaba de llegar a $RELEASE_DIR.
+sudo mkdir -p "$RELEASE_DIR"
+sudo rsync -a --delete --exclude 'manifest.json' "$REPO_ROOT/client-build"/ "$RELEASE_DIR"/
+# El binario ya construido más arriba (dotnet build Epimeteo.sln), no `dotnet run`: éste
+# reconstruiría el proyecto otra vez sólo para generar un manifiesto.
+sudo dotnet "$REPO_ROOT/tools/Epimeteo.ReleaseTool/bin/Release/net8.0/Epimeteo.ReleaseTool.dll" "$RELEASE_DIR" >/dev/null
+# Server/Files/ReleasePaths.cs busca client-build/ junto al binario, igual que ContentPaths busca
+# content/: mismo enlace, mismo motivo.
+sudo ln -sfn "$RELEASE_DIR" "$APP_DIR/client-build"
 
 echo "==> Permisos (usuario dedicado, CLAUDE.md §2)"
 sudo chown -R epimeteo:epimeteo "$DEPLOY_ROOT"

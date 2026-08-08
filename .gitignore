@@ -20,6 +20,13 @@ export_presets.cfg
 /build/
 /exports/
 
+# ---- Distribución del cliente (Fase 15) ----
+# El contenido de client-build/ es salida de una exportación de Godot, no fuente: pesa y cambia
+# en cada build. Se sirve por /files/ y se genera con tools/Epimeteo.ReleaseTool; el README que
+# explica que aún no hay build real sí se versiona, para que el mecanismo tenga algo que servir.
+/client-build/*
+!/client-build/README.md
+
 # ---- Secretos y entorno ----
 appsettings.Development.json
 appsettings.Production.json
