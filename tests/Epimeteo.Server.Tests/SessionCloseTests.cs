@@ -1,4 +1,6 @@
 using Epimeteo.Server.Net;
+using Epimeteo.Server.Observability;
+using Epimeteo.Server.Persistence.Anomalies;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Net.Messages;
 using Xunit;
@@ -84,5 +86,14 @@ public sealed class SessionCloseTests
     private static Session NewSession(FakeWebSocket socket) =>
         // El despachador nunca llega a usarse: en estos tests la sesión se expulsa antes de
         // atender un solo frame, que es justo el camino que se está comprobando.
-        new(id: 1, socket, "127.0.0.1", handler: null!, outboundCapacity: 32);
+        new(id: 1, socket, "127.0.0.1", handler: null!, outboundCapacity: 32,
+            new ServerMetrics(), new NullAnomalySink());
+
+    /// <summary>Las anomalías no son lo que se prueba aquí; se tiran.</summary>
+    private sealed class NullAnomalySink : IAnomalySink
+    {
+        public void Enqueue(in AnomalySave save)
+        {
+        }
+    }
 }

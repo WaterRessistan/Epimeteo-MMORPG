@@ -4,9 +4,11 @@ using Epimeteo.Server.Content;
 using Epimeteo.Server.Farm;
 using Epimeteo.Server.Inventory;
 using Epimeteo.Server.Net;
+using Epimeteo.Server.Observability;
 using Epimeteo.Server.Persistence;
 using Epimeteo.Server.Persistence.Accounts;
 using Epimeteo.Server.Persistence.Admin;
+using Epimeteo.Server.Persistence.Anomalies;
 using Epimeteo.Server.Persistence.Characters;
 using Epimeteo.Server.Persistence.Chat;
 using Epimeteo.Server.Persistence.Combat;
@@ -15,6 +17,8 @@ using Epimeteo.Server.Persistence.Farm;
 using Epimeteo.Server.Persistence.Items;
 using Epimeteo.Server.Shop;
 using Epimeteo.Server.World;
+using System.Security.Cryptography;
+using System.Text;
 using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Time;
@@ -51,7 +55,11 @@ try
     MigrationRunner.Run(connectionString);
 
     builder.Services.AddSingleton(options);
-    builder.Services.AddSingleton(new NpgsqlConnectionFactory(connectionString));
+
+    // Se construye antes que nada porque casi todo lo demás la recibe por constructor.
+    var metrics = new ServerMetrics();
+    builder.Services.AddSingleton(metrics);
+    builder.Services.AddSingleton(new NpgsqlConnectionFactory(connectionString, metrics));
     builder.Services.AddSingleton<PasswordHasher>();
     builder.Services.AddSingleton<AccountRepository>();
     builder.Services.AddSingleton<LoginAttemptRepository>();
@@ -77,6 +85,7 @@ try
     builder.Services.AddSingleton<CombatLogRepository>();
     builder.Services.AddSingleton<ChatLogRepository>();
     builder.Services.AddSingleton<AdminActionRepository>();
+    builder.Services.AddSingleton<AnomalyRepository>();
     builder.Services.AddSingleton<EntityIdAllocator>();
     builder.Services.AddSingleton<WorldInbox>();
     builder.Services.AddSingleton<IWorldInbox>(sp => sp.GetRequiredService<WorldInbox>());
@@ -94,6 +103,8 @@ try
     builder.Services.AddSingleton<IChatLogSink>(sp => sp.GetRequiredService<ChatLogSaver>());
     builder.Services.AddSingleton<AdminActionSaver>();
     builder.Services.AddSingleton<IAdminActionSink>(sp => sp.GetRequiredService<AdminActionSaver>());
+    builder.Services.AddSingleton<AnomalySaver>();
+    builder.Services.AddSingleton<IAnomalySink>(sp => sp.GetRequiredService<AnomalySaver>());
 
     // El stock de tiendas y el estado de granja se cargan una vez aquí, de forma
     // síncrona-bloqueante, igual que MigrationRunner.Run un poco más arriba: es el arranque del
@@ -115,7 +126,8 @@ try
     builder.Services.AddSingleton(sp => new GameLoop(
         options.TickRate,
         sp.GetRequiredService<GameWorld>(),
-        sp.GetRequiredService<SessionManager>().OnTick));
+        sp.GetRequiredService<SessionManager>().OnTick,
+        sp.GetRequiredService<ServerMetrics>()));
 
     // Las colas de guardado arrancan antes que el bucle y, por tanto, se paran después: así el
     // vaciado final del apagado todavía tiene quien lo escriba.
@@ -126,6 +138,7 @@ try
     builder.Services.AddHostedService(sp => sp.GetRequiredService<CombatLogSaver>());
     builder.Services.AddHostedService(sp => sp.GetRequiredService<ChatLogSaver>());
     builder.Services.AddHostedService(sp => sp.GetRequiredService<AdminActionSaver>());
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<AnomalySaver>());
     builder.Services.AddHostedService<GameLoopService>();
 
     builder.WebHost.ConfigureKestrel(kestrel =>
@@ -165,10 +178,37 @@ try
 
         var allowed = port == options.WebSocketPort
             ? path.Equals("/ws", StringComparison.Ordinal)
-            : path.Equals("/version", StringComparison.Ordinal) || path.Equals("/status", StringComparison.Ordinal);
+            : path.Equals("/version", StringComparison.Ordinal)
+                || path.Equals("/status", StringComparison.Ordinal)
+                || path.Equals("/metrics", StringComparison.Ordinal);
 
         if (!allowed)
         {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        await next(context);
+    });
+
+    // Autenticación de los endpoints internos (FASE-13 §2 D2). Va aquí, en el pipeline, y no en
+    // cada endpoint: así una ruta interna nueva nace protegida en vez de nacer abierta y
+    // esperar a que alguien se acuerde.
+    //
+    // El hallazgo que lo motiva: /status estaba respondiendo 200 en internet
+    // (https://<dominio>/status), filtrando jugadores conectados, colas de guardado y tiempos de
+    // tick a cualquiera que probara la URL — nginx proxificaba `location /` entero al 5101 para
+    // servir /version. Se cierra en dos capas independientes: esta y la de nginx.
+    app.Use(async (context, next) =>
+    {
+        var path = context.Request.Path;
+        var isInternal = path.Equals("/status", StringComparison.Ordinal)
+            || path.Equals("/metrics", StringComparison.Ordinal);
+
+        if (isInternal && !IsAuthorized(context, options.MetricsToken))
+        {
+            // 404 y no 401: un 401 confirma que la ruta existe. Quien tenga el token sabe que
+            // está ahí; para el resto no hay nada que descubrir.
             context.Response.StatusCode = StatusCodes.Status404NotFound;
             return;
         }
@@ -216,7 +256,8 @@ try
     app.MapGet("/status", (
         SessionManager sessions, GameLoop loop, GameWorld world,
         CharacterSaver saver, InventorySaver invSaver, EconomySaver econSaver, FarmTileSaver farmSaver,
-        CombatLogSaver combatSaver, ChatLogSaver chatSaver, AdminActionSaver adminSaver) =>
+        CombatLogSaver combatSaver, ChatLogSaver chatSaver, AdminActionSaver adminSaver,
+        AnomalySaver anomalySaver) =>
     {
         var stats = loop.Metrics.Snapshot();
         return Results.Json(new
@@ -235,6 +276,7 @@ try
                 pendingCombatSaves = combatSaver.PendingCount,
                 pendingChatSaves = chatSaver.PendingCount,
                 pendingAdminSaves = adminSaver.PendingCount,
+                pendingAnomalySaves = anomalySaver.PendingCount,
                 monsters = world.MonsterCount,
             },
             tick = new
@@ -249,6 +291,41 @@ try
             },
         });
     });
+
+    app.MapGet("/metrics", (ServerMetrics serverMetrics) =>
+        Results.Text(serverMetrics.Render(), "text/plain; version=0.0.4"));
+
+    // Los gauges se enganchan aquí, ya construido el contenedor: leen del estado vivo en el
+    // momento de exponerlos, así que no hay forma de que se queden desactualizados.
+    {
+        var world = app.Services.GetRequiredService<GameWorld>();
+        var sessions = app.Services.GetRequiredService<SessionManager>();
+        var savers = new Func<int>[]
+        {
+            () => app.Services.GetRequiredService<CharacterSaver>().PendingCount,
+            () => app.Services.GetRequiredService<InventorySaver>().PendingCount,
+            () => app.Services.GetRequiredService<EconomySaver>().PendingCount,
+            () => app.Services.GetRequiredService<FarmTileSaver>().PendingCount,
+            () => app.Services.GetRequiredService<CombatLogSaver>().PendingCount,
+            () => app.Services.GetRequiredService<ChatLogSaver>().PendingCount,
+            () => app.Services.GetRequiredService<AdminActionSaver>().PendingCount,
+            () => app.Services.GetRequiredService<AnomalySaver>().PendingCount,
+        };
+
+        metrics.BindWorldSources(
+            () => sessions.Count,
+            () => world.PlayerCount,
+            () => world.EntityCount,
+            () => world.MonsterCount,
+            () => savers.Sum(pending => pending()));
+    }
+
+    if (string.IsNullOrEmpty(options.MetricsToken))
+    {
+        Log.Warning(
+            "Epimeteo:MetricsToken sin configurar: /status y /metrics responden 404. " +
+            "Es el fallo seguro por defecto; configúralo para poder consultarlos.");
+    }
 
     Log.Information("Epimeteo servidor · protocolo v{Protocol} · WS 127.0.0.1:{WsPort} · HTTP 127.0.0.1:{HttpPort}",
         ProtocolVersion.Current, options.WebSocketPort, options.HttpPort);
@@ -266,4 +343,32 @@ finally
 }
 
 /// <summary>Punto de entrada. Declarado explícitamente para poder referenciarlo desde los tests.</summary>
-public partial class Program;
+public partial class Program
+{
+    /// <summary>
+    /// Comprueba <c>Authorization: Bearer &lt;token&gt;</c> contra el configurado (FASE-13 §2 D2).
+    /// <para>
+    /// Token vacío devuelve falso siempre: sin configurar, cerrado. Y la comparación es en tiempo
+    /// constante — comparar con <c>==</c> corta en el primer byte distinto y filtra el token por
+    /// tiempo de respuesta, byte a byte. Aquí no cuesta nada evitarlo.
+    /// </para>
+    /// </summary>
+    private static bool IsAuthorized(HttpContext context, string expectedToken)
+    {
+        if (string.IsNullOrEmpty(expectedToken))
+        {
+            return false;
+        }
+
+        var header = context.Request.Headers.Authorization.ToString();
+        const string Prefix = "Bearer ";
+        if (!header.StartsWith(Prefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(header[Prefix.Length..]),
+            Encoding.UTF8.GetBytes(expectedToken));
+    }
+}

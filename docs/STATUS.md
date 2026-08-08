@@ -812,14 +812,77 @@ deja de ser cierta, justo lo que esta fase cambiaba a propósito. Arreglado busc
 plan), ningún personaje de verdad puede llegar todavía a las zonas nuevas — se comprueba que
 existen, cargan y se pueblan, no que se puedan visitar.
 
+## Hecho en la Fase 13 — Observabilidad y anticheat
+
+Plan completo en `docs/fases/FASE-13-observabilidad-anticheat.md` (con una §11 al cierre sobre lo
+que pasó de verdad). Tres de las cuatro líneas que pedía `docs/03` **ya estaban hechas** desde
+fases anteriores; el plan empieza reconociéndolo para no duplicar trabajo, y §2 D3 explica por qué
+dos de los cuatro "detectores" que pedía el roadmap no se implementan: son **imposibles por
+diseño**, y escribirlos habría sido código que no puede dispararse dando falsa sensación de
+cobertura.
+
+- **Hallazgo de seguridad, el importante:** `/status` respondía **200 en internet**, sin
+  autenticar, filtrando jugadores conectados, colas de guardado y tiempos de tick — `nginx`
+  proxificaba `location /` entero al 5101 para servir `/version`, y `/status` viajaba de rebote.
+  Cerrado en dos capas independientes: token `Bearer` en el servidor (comparado en tiempo
+  constante, y **vacío significa 404, no abierto**) y `location = /version` exacto en nginx.
+  `/version` sigue abierto porque es lo que un cliente necesita para saber si le toca actualizarse.
+- `Observability/`: registro de métricas Prometheus **a mano**, sin dependencia nueva (§2 D1) —
+  contadores, gauges que se leen del estado vivo al exponerlos, e histogramas con buckets fijos.
+  `/metrics` publica tick, jugadores, entidades, monstruos, mensajes, sesiones, colas y latencia
+  de Postgres.
+- `Security/AnomalyRecorder`: **lo que faltaba no era detectar, era sumar.** Había ~29 puntos que
+  rechazaban una acción, la logueaban y la olvidaban; un cliente honesto falla alguno por latencia,
+  uno parcheado falla el mismo cientos de veces por minuto, y nadie miraba esa diferencia. Ahora
+  se cuenta por sesión y tipo en una ventana de 60 s, con escalada de dos pasos (aviso → cierre) y
+  umbrales distintos por tipo. Puro y determinista: se prueba una ventana de 60 s sin esperarla.
+- `AnomalyMapping` traduce rechazo a anomalía en un solo sitio —los cuatro `Send*Failure` por los
+  que pasan los 29— distinguiendo **"no puedes"** (quedarse sin maná, zona segura, inventario
+  lleno: juego normal, no cuenta) de **"eso no debería haber llegado"**.
+- `anomaly_log` (migración `0007`) con el patrón de sink de siempre.
+
+### Verificación Fase 13 (esta sesión, contra el servicio de producción real)
+
+1. ✅ `dotnet build` sin warnings (solución y cliente); `dotnet test`: **163/163 compartidos +
+   305/305 servidor**.
+2. ✅ Los seis casos de autenticación en loopback, y desde internet: `/status` y `/metrics` → 404,
+   `/version` → 200, `/ws` → 400 (el juego sigue vivo). El parche de nginx se aplicó
+   quirúrgicamente sobre el fichero instalado, con copia de seguridad y `nginx -t`: copiarle
+   encima el del repositorio habría borrado las líneas de TLS que gestiona Certbot.
+3. ✅ `tools/Epimeteo.WorldBot --anticheat`: **4/4 en verde** — por debajo del umbral no pasa nada,
+   insistir desconecta, y el bot honesto de la misma corrida no lo paga.
+4. ✅ En `psql`, `anomaly_log` con exactamente dos filas por corrida: aviso a los 30 y desconexión
+   a los 120. En el log, `WRN` y luego `ERR` — que es *la alerta* (§2 D6).
+5. ✅ Coste de la instrumentación: tick medio **10 → 11 µs**, p99 **41 → 33 µs**. Dentro del ruido.
+
+**Hallazgo preexistente, anotado y no arreglado:** el arnés de bots se come a veces su propia cola
+de salida (`KickReason.InternalError`, 16 veces en dos días, la primera durante la Fase 9). No lo
+causa esta fase y el servidor se comporta como debe; arreglar el arnés no es trabajo de una fase de
+observabilidad. Sí se arregló **la comprobación**, que pasaba por suerte de temporización: ahora
+drena antes de afirmar, y afirma lo preciso (que la escalada no lo alcanzó) en vez de un
+`Kicked is null` frágil.
+
+**Límite honesto:** los umbrales son provisionales y generosos, y **no se han validado contra
+tráfico real de jugadores** porque todavía no hay ninguno. Están puestos para no producir falsos
+positivos, no para atrapar a nadie con eficacia; `anomaly_log` existe para apretarlos con datos
+cuando los haya.
+
 ## Siguiente sesión
 
-**Fase 13 — Observabilidad y anticheat · Opus.** Siguiente en `docs/03-roadmap-fases.md` —
-**cambio de modelo** (CLAUDE.md §6: rate limiting completo, detección de anomalías y seguridad
-son trabajo de diseño, no de implementación sobre lo ya cerrado). Serilog estructurado, métricas
-Prometheus (tiempo de tick, jugadores, mensajes/s, latencia de BD), rate limiting completo por
-familia de opcode con *strikes* y desconexión, detectores (velocidad, teletransporte, alcance
-imposible, cadencia de acciones, anomalías de oro), y un `/status` autenticado con alertas.
+**Fase 14 — Escalado multi-zona · Opus · _opcional_.** `docs/03-roadmap-fases.md` dice
+explícitamente **"no la hagas por defecto"**: sin un objetivo de jugadores concreto, un solo
+proceso con las zonas ya aisladas aguanta de sobra, y sólo se abre si las métricas de la Fase 13
+muestran tick times que se disparen. Con el tick medio en **11 µs** sobre un presupuesto de
+50 000 µs, no hay nada que escalar. **Lo razonable es saltar a la Fase 15 — Pulido y release ·
+Sonnet** (audio, UX, opciones, launcher/parcheador, build de distribución) y dejar la 14 para si
+algún día hace falta de verdad.
+
+**Operación, nuevo de esta fase:** `Epimeteo:MetricsToken` ya está configurado en
+`/opt/epimeteo/app/appsettings.Production.json` (fuera de git, permisos 600). Para consultar
+`/status` o `/metrics` desde fuera de la máquina, **túnel SSH al 5101** — nginx no da salida a esas
+rutas a propósito. Queda pendiente, si alguien quiere gráficas: montar un Prometheus que haga
+*scrape* de `/metrics` y un Grafana encima. El endpoint ya está en el formato estándar; instalarlos
+es trabajo de operación, no de código.
 
 **Pendiente aparte, en cuanto haya una máquina con entorno gráfico:** abrir `client/project.godot`
 en Godot 4.5 y comprobar a mano lo que este servidor headless no puede: dos clientes viéndose

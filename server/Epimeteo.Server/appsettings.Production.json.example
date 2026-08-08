@@ -1,5 +1,17 @@
 {
   "ConnectionStrings": {
     "Epimeteo": "Host=localhost;Database=epimeteo;Username=epimeteo;Password=CAMBIA_ESTO"
+  },
+
+  // MetricsToken protege /status y /metrics (FASE-13 §2 D2). Vacío o ausente = los dos endpoints
+  // responden 404: el fallo por defecto de un endpoint de telemetría tiene que ser "no existe",
+  // no "pasa quien sea". /version no lo necesita y sigue abierto.
+  //
+  // Genéralo con:  openssl rand -hex 32
+  //
+  // Para consultarlos desde fuera de la máquina, un túnel SSH al 5101 — nginx no da salida a esas
+  // rutas a propósito, y abrirlas ahí sería deshacer media protección.
+  "Epimeteo": {
+    "MetricsToken": "CAMBIA_ESTO"
   }
 }

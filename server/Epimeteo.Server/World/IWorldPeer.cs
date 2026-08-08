@@ -1,3 +1,4 @@
+using Epimeteo.Server.Security;
 using Epimeteo.Shared.Net;
 
 namespace Epimeteo.Server.World;
@@ -28,4 +29,11 @@ public interface IWorldPeer
 
     /// <summary>Cierra la sesión.</summary>
     void Kick(KickReason reason, ResultCode detail = ResultCode.Ok);
+
+    /// <summary>
+    /// Apunta una anomalía a esta sesión (FASE-13 §2 D4). El mundo sólo <b>informa</b>: cuándo eso
+    /// deja de ser ruido y qué hacer al respecto —contar, avisar o desconectar— lo decide la
+    /// sesión con su propio <c>AnomalyRecorder</c>, que es quien tiene la ventana y la IP.
+    /// </summary>
+    void RecordAnomaly(AnomalyKind kind);
 }

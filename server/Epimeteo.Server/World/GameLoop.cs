@@ -1,3 +1,4 @@
+using Epimeteo.Server.Observability;
 using Epimeteo.Shared.Time;
 using Serilog;
 using ILogger = Serilog.ILogger;
@@ -20,6 +21,7 @@ public sealed class GameLoop : IDisposable
     private readonly Action<long> _onTick;
     private readonly CancellationTokenSource _cts = new();
     private readonly ILogger _log = Log.ForContext<GameLoop>();
+    private readonly ServerMetrics? _metrics;
     private Thread? _thread;
 
     /// <param name="tickRate">Ticks por segundo.</param>
@@ -28,12 +30,13 @@ public sealed class GameLoop : IDisposable
     /// Trabajo periódico que no pertenece a ningún sistema de mundo (barrido de timeouts de
     /// sesión). Recibe el número de tick.
     /// </param>
-    public GameLoop(int tickRate, GameWorld world, Action<long> onTick)
+    public GameLoop(int tickRate, GameWorld world, Action<long> onTick, ServerMetrics? metrics = null)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(tickRate, 1);
         _tickIntervalUs = 1_000_000 / tickRate;
         _world = world;
         _onTick = onTick;
+        _metrics = metrics;
     }
 
     /// <summary>Número de ticks completados.</summary>
@@ -91,7 +94,20 @@ public sealed class GameLoop : IDisposable
             nextTickUs += _tickIntervalUs;
             var remainingUs = nextTickUs - endUs;
 
-            Metrics.Record(endUs - startUs, remainingUs < 0);
+            var durationUs = endUs - startUs;
+            Metrics.Record(durationUs, remainingUs < 0);
+
+            // Las mismas cifras que ya lleva TickMetrics para /status, pero en el formato que
+            // Prometheus sabe agregar entre reinicios (FASE-13 §2 D1).
+            if (_metrics is not null)
+            {
+                _metrics.TicksTotal.Increment();
+                _metrics.TickDurationMicros.Observe(durationUs);
+                if (remainingUs < 0)
+                {
+                    _metrics.TickOverruns.Increment();
+                }
+            }
 
             if (remainingUs < -_tickIntervalUs)
             {

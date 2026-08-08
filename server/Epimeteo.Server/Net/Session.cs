@@ -1,6 +1,9 @@
 using System.Buffers;
 using System.Net.WebSockets;
 using System.Threading.Channels;
+using Epimeteo.Server.Observability;
+using Epimeteo.Server.Persistence.Anomalies;
+using Epimeteo.Server.Security;
 using Epimeteo.Server.World;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Net.Messages;
@@ -39,12 +42,23 @@ public sealed class Session : IWorldPeer
     private readonly Channel<byte[]> _outbound;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly ILogger _log;
+    private readonly ServerMetrics _metrics;
+    private readonly IAnomalySink _anomalies;
+    private readonly AnomalyRecorder _anomalyRecorder = new();
+    private readonly object _anomalyGate = new();
 
     private long _lastInboundMs;
     private int _kicked;
     private int _rttMs;
 
-    internal Session(int id, WebSocket socket, string remoteAddress, SessionMessageHandler handler, int outboundCapacity)
+    internal Session(
+        int id,
+        WebSocket socket,
+        string remoteAddress,
+        SessionMessageHandler handler,
+        int outboundCapacity,
+        ServerMetrics metrics,
+        IAnomalySink anomalies)
     {
         Id = id;
         RemoteAddress = remoteAddress;
@@ -52,6 +66,8 @@ public sealed class Session : IWorldPeer
         State = SessionState.Connecting;
         _socket = socket;
         _handler = handler;
+        _metrics = metrics;
+        _anomalies = anomalies;
         _lastInboundMs = ConnectedAtMs;
         _log = Log.ForContext<Session>().ForContext("SessionId", id);
         _outbound = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(outboundCapacity)
@@ -159,6 +175,47 @@ public sealed class Session : IWorldPeer
         }
     }
 
+    /// <inheritdoc />
+    public void RecordAnomaly(AnomalyKind kind)
+    {
+        AnomalyOutcome outcome;
+
+        // El recorder no es seguro entre hilos y aquí sí llegan dos: el bucle de lectura (rate
+        // limit, protocolo) y el hilo del tick (rechazos del mundo). El lock cubre sólo el conteo
+        // —unos pocos incrementos de array— no la escritura en BD ni el kick.
+        lock (_anomalyGate)
+        {
+            outcome = _anomalyRecorder.Record(kind, ServerClock.NowMs);
+        }
+
+        if (outcome.Verdict == AnomalyVerdict.Counted)
+        {
+            return;
+        }
+
+        _metrics.AnomaliesDetected.Increment();
+
+        _anomalies.Enqueue(new AnomalySave(
+            Id, CharacterId, AccountId, kind, outcome.CountInWindow, outcome.Verdict, RemoteAddress));
+
+        if (outcome.Verdict == AnomalyVerdict.Kick)
+        {
+            // Nivel Error a propósito: esto es *la alerta* (FASE-13 §2 D6). Quien opere el
+            // servidor la engancha a lo que use; el trabajo de aquí es producir la señal, no
+            // elegir por dónde sale.
+            _log.Error(
+                "Anomalía {Kind} en la sesión {SessionId} ({Count} en la ventana, IP {Remote}); se cierra la sesión",
+                kind, Id, outcome.CountInWindow, RemoteAddress);
+
+            Kick(KickReason.RateLimited, ResultCode.RateLimited);
+            return;
+        }
+
+        _log.Warning(
+            "Anomalía {Kind} en la sesión {SessionId} ({Count} en la ventana, IP {Remote})",
+            kind, Id, outcome.CountInWindow, RemoteAddress);
+    }
+
     /// <summary>
     /// Manda <see cref="S2CKick"/> y cierra la conexión. Idempotente y seguro desde cualquier hilo.
     /// </summary>
@@ -169,6 +226,7 @@ public sealed class Session : IWorldPeer
             return;
         }
 
+        _metrics.SessionsKicked.Increment();
         _log.Information("Sesión {SessionId} expulsada: {Reason} ({Detail})", Id, reason, detail);
 
         _outbound.Writer.TryWrite(FrameCodec.Encode(Opcode.Kick, new S2CKick
@@ -283,31 +341,42 @@ public sealed class Session : IWorldPeer
 
     private async Task HandleFrameAsync(ReadOnlyMemory<byte> frame)
     {
+        _metrics.MessagesReceived.Increment();
+
         if (!FrameCodec.TryReadOpcode(frame.Span, out var opcode))
         {
+            _metrics.MessagesRejected.Increment();
             _log.Warning("Frame de {Bytes} B sin cabecera en la sesión {SessionId}", frame.Length, Id);
+            RecordAnomaly(AnomalyKind.ProtocolError);
             Kick(KickReason.ProtocolError);
             return;
         }
 
         if (!OpcodeTable.TryGet(opcode, out var spec) || !spec.IsClientToServer)
         {
+            _metrics.MessagesRejected.Increment();
             _log.Warning("Opcode desconocido o de servidor {Opcode} en la sesión {SessionId}", opcode, Id);
+            RecordAnomaly(AnomalyKind.ProtocolError);
             Kick(KickReason.ProtocolError);
             return;
         }
 
         if ((spec.LegalStates & State) == 0)
         {
+            _metrics.MessagesRejected.Increment();
             _log.Warning("Opcode {Opcode} recibido en estado {State} en la sesión {SessionId}", opcode, State, Id);
+            RecordAnomaly(AnomalyKind.InvalidState);
             Kick(KickReason.InvalidState, ResultCode.InvalidState);
             return;
         }
 
         if (!RateLimiter.TryAcquire(spec.Family, ServerClock.NowMs, out var disconnect))
         {
+            _metrics.MessagesRejected.Increment();
             _log.Warning("Rate limit de {Family} superado en la sesión {SessionId} (strike {Strikes})",
                 spec.Family, Id, RateLimiter.Strikes);
+
+            RecordAnomaly(AnomalyKind.RateLimited);
 
             if (disconnect)
             {

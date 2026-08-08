@@ -9,6 +9,7 @@ using Epimeteo.Server.Persistence.Economy;
 using Epimeteo.Server.Persistence.Combat;
 using Epimeteo.Server.Persistence.Farm;
 using Epimeteo.Server.Persistence.Items;
+using Epimeteo.Server.Security;
 using Epimeteo.Server.Shop;
 using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
@@ -1393,8 +1394,8 @@ public sealed class GameWorld
         SendEquipmentUpdate(player);
     }
 
-    private static void SendProgressionFailure(PlayerEntity player, ResultCode code) => player.Peer.Send(
-        Opcode.SystemMessage, new S2CSystemMessage { Severity = 0, Key = $"progression.{code}", Args = [] });
+    private static void SendProgressionFailure(PlayerEntity player, ResultCode code) =>
+        SendFailure(player, "progression", code);
 
     /// <summary>
     /// Un <c>ChatSend</c>: mensaje normal o comando de barra, según decida
@@ -1656,8 +1657,8 @@ public sealed class GameWorld
     private static void ConfirmAdminAction(PlayerEntity admin, string targetName) => admin.Peer.Send(
         Opcode.SystemMessage, new S2CSystemMessage { Severity = 0, Key = "chat.AdminActionDone", Args = [targetName] });
 
-    private static void SendChatFailure(PlayerEntity player, ResultCode code) => player.Peer.Send(
-        Opcode.SystemMessage, new S2CSystemMessage { Severity = 0, Key = $"chat.{code}", Args = [] });
+    private static void SendChatFailure(PlayerEntity player, ResultCode code) =>
+        SendFailure(player, "chat", code);
 
     /// <summary>Manda a todo el mundo, en todas las zonas — el canal global no se queda en la propia (FASE-11 §2 D2).</summary>
     private void BroadcastToWorld<T>(Opcode opcode, T payload)
@@ -1716,8 +1717,8 @@ public sealed class GameWorld
             MsRemaining = (int)Math.Max(0, player.CombatFlagUntilMs - nowMs),
         });
 
-    private static void SendCombatFailure(PlayerEntity player, ResultCode code) => player.Peer.Send(
-        Opcode.SystemMessage, new S2CSystemMessage { Severity = 0, Key = $"combat.{code}", Args = [] });
+    private static void SendCombatFailure(PlayerEntity player, ResultCode code) =>
+        SendFailure(player, "combat", code);
 
     /// <summary>Manda un evento a todo el que tenga a <paramref name="subject"/> en su área de interés.</summary>
     private static void BroadcastCombatEvent(Zone zone, WorldEntity subject, S2CCombatEvent evt)
@@ -2128,9 +2129,25 @@ public sealed class GameWorld
         SaveInventory(player);
     }
 
-    private static void SendInventoryFailure(PlayerEntity player, ResultCode code) => player.Peer.Send(
-        Opcode.SystemMessage,
-        new S2CSystemMessage { Severity = 0, Key = $"inventory.{code}", Args = [] });
+    private static void SendInventoryFailure(PlayerEntity player, ResultCode code) =>
+        SendFailure(player, "inventory", code);
+
+    /// <summary>
+    /// El único sitio por el que sale un rechazo hacia el cliente. Aparte de mandar el
+    /// <c>SystemMessage</c>, es donde se le apunta la anomalía a la sesión si el código lo merece
+    /// (FASE-13 §2 D4): así los ~29 puntos que rechazan algo quedan cubiertos sin tocarlos uno a
+    /// uno, y un rechazo nuevo de una fase futura queda cubierto solo.
+    /// </summary>
+    private static void SendFailure(PlayerEntity player, string prefix, ResultCode code)
+    {
+        player.Peer.Send(
+            Opcode.SystemMessage, new S2CSystemMessage { Severity = 0, Key = $"{prefix}.{code}", Args = [] });
+
+        if (AnomalyMapping.For(code) is { } anomaly)
+        {
+            player.Peer.RecordAnomaly(anomaly);
+        }
+    }
 
     /// <summary>
     /// Recalcula stats derivados (FASE-06 §2 D5), clampa <c>Hp</c>/<c>Mp</c> actuales a los

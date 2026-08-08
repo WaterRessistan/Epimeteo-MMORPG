@@ -9,6 +9,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\shared\Epimeteo.Shared\Epimeteo.Shared.csproj" />
+    <!-- Sólo para leer AnomalyThresholds/AnomalyKind en la fase de anticheat (Fase 13): así los
+         umbrales que comprueba el bot son los mismos que aplica el servidor, y no dos números
+         que se van separando. Mismo criterio que Epimeteo.ContentValidator. -->
+    <ProjectReference Include="..\..\server\Epimeteo.Server\Epimeteo.Server.csproj" />
   </ItemGroup>
 
 </Project>

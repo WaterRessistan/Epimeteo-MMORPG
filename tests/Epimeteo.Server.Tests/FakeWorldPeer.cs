@@ -1,3 +1,4 @@
+using Epimeteo.Server.Security;
 using Epimeteo.Server.World;
 using Epimeteo.Shared.Net;
 
@@ -25,6 +26,9 @@ internal sealed class FakeWorldPeer : IWorldPeer
 
     public IReadOnlyList<(Opcode Opcode, object Payload)> Sent => _sent;
 
+    /// <summary>Anomalías que el mundo le apuntó a esta sesión (Fase 13). Una sesión de verdad las escala; aquí sólo se anotan.</summary>
+    public List<AnomalyKind> Anomalies { get; } = [];
+
     public void Send<T>(Opcode opcode, T payload) => _sent.Add((opcode, payload!));
 
     public void Kick(KickReason reason, ResultCode detail = ResultCode.Ok)
@@ -32,6 +36,9 @@ internal sealed class FakeWorldPeer : IWorldPeer
         Kicked = true;
         KickedReason = reason;
     }
+
+    /// <inheritdoc />
+    public void RecordAnomaly(AnomalyKind kind) => Anomalies.Add(kind);
 
     /// <summary>Todos los mensajes de un opcode, en orden de envío.</summary>
     public IEnumerable<T> Messages<T>(Opcode opcode) => _sent

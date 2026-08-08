@@ -1,4 +1,5 @@
 using Epimeteo.Server.Combat;
+using Epimeteo.Server.Security;
 using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Net.Messages;
@@ -270,6 +271,13 @@ public sealed class Zone
         {
             case InputAdmission.RejectedBudget:
                 player.CheatStrikes++;
+
+                // El presupuesto de inputs *es* el control de velocidad (FASE-04 §2 D5). Aparte
+                // del corte duro de abajo, se apunta como anomalía para que quede el patrón
+                // sostenido de quien se queda justo por debajo del corte una y otra vez
+                // (FASE-13 §2 D4).
+                player.Peer.RecordAnomaly(AnomalyKind.InputBudget);
+
                 if (player.CheatStrikes == CheatStrikeLimit)
                 {
                     _log.Warning(

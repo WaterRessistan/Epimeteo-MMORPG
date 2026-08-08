@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
+using Epimeteo.Server.Observability;
+using Epimeteo.Server.Persistence.Anomalies;
 using Epimeteo.Server.World;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Time;
@@ -18,14 +20,23 @@ public sealed class SessionManager
     private readonly ServerOptions _options;
     private readonly SessionMessageHandler _handler;
     private readonly IWorldInbox _worldInbox;
+    private readonly ServerMetrics _metrics;
+    private readonly IAnomalySink _anomalies;
     private readonly ILogger _log = Log.ForContext<SessionManager>();
     private int _nextId;
 
-    public SessionManager(ServerOptions options, SessionMessageHandler handler, IWorldInbox worldInbox)
+    public SessionManager(
+        ServerOptions options,
+        SessionMessageHandler handler,
+        IWorldInbox worldInbox,
+        ServerMetrics metrics,
+        IAnomalySink anomalies)
     {
         _options = options;
         _handler = handler;
         _worldInbox = worldInbox;
+        _metrics = metrics;
+        _anomalies = anomalies;
     }
 
     /// <summary>Sesiones conectadas ahora mismo.</summary>
@@ -35,8 +46,10 @@ public sealed class SessionManager
     public Session Create(WebSocket socket, string remoteAddress)
     {
         var id = Interlocked.Increment(ref _nextId);
-        var session = new Session(id, socket, remoteAddress, _handler, _options.OutboundQueueCapacity);
+        var session = new Session(
+            id, socket, remoteAddress, _handler, _options.OutboundQueueCapacity, _metrics, _anomalies);
         _sessions[id] = session;
+        _metrics.SessionsOpened.Increment();
         _log.Debug("Sesión {SessionId} aceptada desde {Remote} ({Count} activas)", id, remoteAddress, _sessions.Count);
         return session;
     }

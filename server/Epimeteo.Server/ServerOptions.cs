@@ -41,4 +41,17 @@ public sealed class ServerOptions
     /// queda en 5</b>: subirlo abre la puerta a probar contraseñas a ritmo.
     /// </summary>
     public int LoginAttemptsPerMinute { get; init; } = 5;
+
+    /// <summary>
+    /// Token que exigen <c>/status</c> y <c>/metrics</c> en la cabecera
+    /// <c>Authorization: Bearer …</c> (FASE-13 §2 D2). Vive fuera de git, como la cadena de
+    /// conexión: en <c>appsettings.Production.json</c>.
+    /// <para>
+    /// <b>Vacío significa cerrado, no abierto:</b> sin token configurado los dos endpoints
+    /// responden 404. Es deliberado — el fallo por defecto de un endpoint de telemetría tiene que
+    /// ser "no existe", no "pasa quien sea". <c>/version</c> no lo necesita: es justo lo que un
+    /// cliente tiene que poder leer para saber si le toca actualizarse antes de conectar.
+    /// </para>
+    /// </summary>
+    public string MetricsToken { get; init; } = string.Empty;
 }

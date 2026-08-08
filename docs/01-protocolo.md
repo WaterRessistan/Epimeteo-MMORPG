@@ -188,3 +188,23 @@ Superar el límite → `SystemMessage(RateLimited)`. Superarlo 3 veces en 10 s �
 - **PvP:** el servidor comprueba la región de atacante **y** víctima con posiciones autoritativas.
   Historial de 500 ms para lag compensation, con margen máximo de 200 ms; pasado ese margen se
   valida contra la posición actual. Un cliente que reporta un RTT inflado no gana alcance.
+- **Agregación de rechazos (Fase 13).** Todo lo de arriba rechaza acciones una a una; desde la
+  Fase 13 además se **cuentan** por sesión y tipo en una ventana de 60 s
+  (`Server/Security/AnomalyRecorder`). Un cliente honesto falla alguno por latencia; uno parcheado
+  falla el mismo cientos de veces. Cruzar el umbral de aviso deja fila en `anomaly_log` y un log
+  de nivel `Warning`; cruzar el duro cierra la sesión. Los umbrales son por tipo — un error de
+  protocolo cuesta mucho más caro que una acción fuera de alcance— y **provisionales**: están
+  puestos para no producir falsos positivos, no para atrapar con eficacia.
+
+## Endpoints HTTP
+
+| Ruta | Puerto | Autenticación | Expuesta en internet |
+|---|---|---|---|
+| `/ws` | 5100 | La del propio protocolo (`Hello` → `Login`) | Sí, por el proxy |
+| `/version` | 5101 | Ninguna | Sí: el cliente la necesita antes de conectar |
+| `/status` | 5101 | `Authorization: Bearer <MetricsToken>` | **No** |
+| `/metrics` | 5101 | `Authorization: Bearer <MetricsToken>` | **No** |
+
+`/status` y `/metrics` responden **404** —no 401— sin token o con uno equivocado: un 401 confirma
+que la ruta existe. Sin `Epimeteo:MetricsToken` configurado también responden 404: el fallo por
+defecto de un endpoint de telemetría es "no existe", no "pasa quien sea" (FASE-13 §2 D2).

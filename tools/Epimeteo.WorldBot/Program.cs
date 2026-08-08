@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Epimeteo.Server.Security;
 using Epimeteo.Shared.Data;
 using Epimeteo.Shared.Net;
 using Epimeteo.Shared.Net.Messages;
@@ -80,6 +81,14 @@ internal static class Program
             var username = Arg(args, "--progression-verify")
                 ?? throw new InvalidOperationException("--progression-verify necesita el username de --progression-grind.");
             return await ProgressionVerifyPhase(url, map, username);
+        }
+
+        // Flujo de anticheat de la Fase 13 (FASE-13-observabilidad-anticheat.md §8): un bot que
+        // insiste en algo inválido y otro que juega normal, para comprobar que la escalada
+        // distingue a uno de otro. Una sola corrida: no hace falta manipular nada por SQL.
+        if (args.Contains("--anticheat"))
+        {
+            return await AnticheatPhase(url, map);
         }
 
         // Flujo de chat de la Fase 11 (FASE-11-chat-social.md §9): los comandos de admin exigen
@@ -1147,6 +1156,90 @@ internal static class Program
         finally
         {
             await forBan.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Verificación del anticheat agregado de la Fase 13 (§8). Dos bots a la vez:
+    /// <list type="bullet">
+    /// <item>el <b>tramposo</b> insiste en atacar a una entidad que no existe — el servidor
+    /// responde <c>TargetNotFound</c>, que <c>AnomalyMapping</c> cuenta como
+    /// <c>OutOfRange</c>— hasta cruzar los dos umbrales;</item>
+    /// <item>el <b>honesto</b> se queda quieto en la misma corrida, para demostrar que la
+    /// escalada es por sesión y no un corte global.</item>
+    /// </list>
+    /// El ritmo es de 10 ataques por segundo, la mitad del cupo de la familia <c>Combat</c>
+    /// (20/s): así lo que desconecta es la agregación de anomalías y no el rate limiter, que
+    /// tiene su propio camino y ya estaba probado desde la Fase 1.
+    /// <code>dotnet run --project tools/Epimeteo.WorldBot -- --anticheat [url]</code>
+    /// </summary>
+    private static async Task<int> AnticheatPhase(string url, GameMap map)
+    {
+        const int InexistentTarget = 999_999;
+
+        var run = Guid.NewGuid().ToString("N")[..8];
+        var tramposo = new Bot(url, $"cheat_{run}", $"Cheat_{run}", map, lagMs: 0);
+        var honesto = new Bot(url, $"fair_{run}", $"Fair_{run}", map, lagMs: 0);
+        var flota = new List<Bot> { tramposo, honesto };
+
+        try
+        {
+            Console.WriteLine("· Anticheat: escalada por anomalías agregadas");
+            await tramposo.ConnectAsync(register: true);
+            await honesto.ConnectAsync(register: true);
+            await Run(flota, 500);
+
+            var (warn, kick) = AnomalyThresholds.For(AnomalyKind.OutOfRange);
+            Console.WriteLine($"  … umbrales de OutOfRange: aviso a {warn}, desconexión a {kick}");
+
+            // ── 1. Por debajo del umbral de aviso no pasa nada ──────────
+            for (var i = 0; i < warn - 5; i++)
+            {
+                tramposo.SendNow(Opcode.Attack, new C2SAttack { TargetEntityId = InexistentTarget });
+                await Run(flota, 100);
+            }
+
+            Check($"Con {warn - 5} rechazos (por debajo del aviso) la sesión sigue viva", tramposo.Kicked is null);
+
+            // ── 2. Insistir hasta cruzar el umbral duro desconecta ──────
+            for (var i = 0; i < kick && tramposo.Kicked is null; i++)
+            {
+                tramposo.SendNow(Opcode.Attack, new C2SAttack { TargetEntityId = InexistentTarget });
+                await Run(flota, 100);
+            }
+
+            Check($"Insistir hasta {kick} rechazos acaba desconectando ({tramposo.Kicked})",
+                tramposo.Kicked == KickReason.RateLimited);
+
+            // ── 3. El honesto, en la misma corrida, no lo paga ──────────
+            // Se drena primero: el S2CKick del tramposo y cualquier mensaje pendiente del honesto
+            // pueden estar todavía en vuelo, y comprobar antes de leerlos daría un verde por pura
+            // suerte de temporización en vez de por lo que se quiere demostrar.
+            await Run([honesto], 1500);
+
+            // La afirmación es precisa a propósito: que **la escalada de anomalías** no lo tocó.
+            // Comprobar `Kicked is null` a secas sería frágil — el arnés de bots tiene una
+            // inundación de la cola de salida preexistente (KickReason.InternalError, ver §11 de
+            // la fase) que nada tiene que ver con el anticheat y haría fallar este test por un
+            // motivo ajeno.
+            Check($"La escalada no alcanzó al bot honesto de la misma corrida ({honesto.Kicked?.ToString() ?? "sigue dentro"})",
+                honesto.Kicked != KickReason.RateLimited);
+
+            Check("...y llegó a jugar con normalidad", honesto.Snapshots > 0);
+
+            Console.WriteLine($"\nusername del tramposo={tramposo.Username} (personaje {tramposo.CharacterId})");
+            Console.WriteLine(
+                "\nPara comprobar la auditoría y las métricas:\n" +
+                "  SELECT kind, count_in_window, action_taken, remote_address\n" +
+                "    FROM anomaly_log ORDER BY at DESC LIMIT 5;\n" +
+                "  curl -H \"Authorization: Bearer $TOKEN\" http://127.0.0.1:5101/metrics | grep anomalies\n");
+
+            return Summarize();
+        }
+        finally
+        {
+            await tramposo.DisposeAsync();
+            await honesto.DisposeAsync();
         }
     }
 
