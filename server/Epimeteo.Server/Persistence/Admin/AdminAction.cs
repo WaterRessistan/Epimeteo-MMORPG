@@ -7,4 +7,13 @@ public enum AdminAction : byte
     Ban = 1,
     Teleport = 2,
     Give = 3,
+
+    /// <summary>
+    /// Curar del todo (hueco real, pedido explícito de sesión: no había forma de reponerse aparte
+    /// de una poción o subir de nivel — ninguna de las dos vale para probar contenido a mano).
+    /// </summary>
+    Heal = 4,
+
+    /// <summary>Conceder XP directamente — mismo motivo que <see cref="Heal"/>.</summary>
+    GrantXp = 5,
 }

@@ -27,11 +27,16 @@ public partial class StatsScreen : CanvasLayer
     {
         _net = GetNode<NetClient>("/root/NetClient");
 
+        // Canvas base 480x270 (CLAUDE.md §2): con el tema compacto de sobra para 7 filas, pero se
+        // deja algo más de alto que el mínimo justo para no repetir el desbordamiento que tenía
+        // CharacterSelect.
+        var theme = GD.Load<Theme>("res://resources/ui/CompactUiTheme.tres");
         _root = new PanelContainer
         {
             Visible = false,
+            Theme = theme,
             AnchorLeft = 0.5f, AnchorRight = 0.5f, AnchorTop = 0.5f, AnchorBottom = 0.5f,
-            OffsetLeft = -140, OffsetRight = 140, OffsetTop = -110, OffsetBottom = 110,
+            OffsetLeft = -140, OffsetRight = 140, OffsetTop = -125, OffsetBottom = 125,
         };
         AddChild(_root);
 

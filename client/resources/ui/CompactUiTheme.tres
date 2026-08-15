@@ -1,0 +1,105 @@
+[gd_resource type="Theme" load_steps=8 format=3]
+
+[ext_resource type="FontFile" path="res://assets/fonts/kenney_fonts/kenney_pixel.ttf" id="1_font"]
+[ext_resource type="Texture2D" path="res://assets/sprites/ui/kenney_pixel_ui_pack/panel_tan.png" id="2_tan"]
+[ext_resource type="Texture2D" path="res://assets/sprites/ui/kenney_pixel_ui_pack/panel_tan_pressed.png" id="3_tan_pressed"]
+[ext_resource type="Texture2D" path="res://assets/sprites/ui/kenney_pixel_ui_pack/panel_grey.png" id="4_grey"]
+[ext_resource type="Texture2D" path="res://assets/sprites/ui/kenney_pixel_ui_pack/panel_grey_pressed.png" id="5_grey_pressed"]
+[ext_resource type="Texture2D" path="res://assets/sprites/ui/kenney_pixel_ui_pack/panel_brown.png" id="6_brown"]
+
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_button_normal"]
+texture = ExtResource("2_tan")
+texture_margin_left = 3.0
+texture_margin_top = 3.0
+texture_margin_right = 3.0
+texture_margin_bottom = 3.0
+content_margin_left = 7.0
+content_margin_top = 3.0
+content_margin_right = 7.0
+content_margin_bottom = 3.0
+
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_button_pressed"]
+texture = ExtResource("3_tan_pressed")
+texture_margin_left = 3.0
+texture_margin_top = 3.0
+texture_margin_right = 3.0
+texture_margin_bottom = 3.0
+content_margin_left = 7.0
+content_margin_top = 3.0
+content_margin_right = 7.0
+content_margin_bottom = 3.0
+modulate_color = Color(0.92, 0.92, 0.92, 1)
+
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_button_hover"]
+texture = ExtResource("2_tan")
+texture_margin_left = 3.0
+texture_margin_top = 3.0
+texture_margin_right = 3.0
+texture_margin_bottom = 3.0
+content_margin_left = 7.0
+content_margin_top = 3.0
+content_margin_right = 7.0
+content_margin_bottom = 3.0
+modulate_color = Color(1.08, 1.05, 0.95, 1)
+
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_field_normal"]
+texture = ExtResource("4_grey")
+texture_margin_left = 3.0
+texture_margin_top = 3.0
+texture_margin_right = 3.0
+texture_margin_bottom = 3.0
+content_margin_left = 6.0
+content_margin_top = 3.0
+content_margin_right = 6.0
+content_margin_bottom = 3.0
+
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_field_focus"]
+texture = ExtResource("5_grey_pressed")
+texture_margin_left = 3.0
+texture_margin_top = 3.0
+texture_margin_right = 3.0
+texture_margin_bottom = 3.0
+content_margin_left = 6.0
+content_margin_top = 3.0
+content_margin_right = 6.0
+content_margin_bottom = 3.0
+
+[sub_resource type="StyleBoxTexture" id="StyleBoxTexture_panel"]
+texture = ExtResource("6_brown")
+texture_margin_left = 3.0
+texture_margin_top = 3.0
+texture_margin_right = 3.0
+texture_margin_bottom = 3.0
+content_margin_left = 10.0
+content_margin_top = 8.0
+content_margin_right = 10.0
+content_margin_bottom = 8.0
+
+[resource]
+default_font = ExtResource("1_font")
+default_font_size = 12
+Button/font_sizes/font_size = 11
+Button/colors/font_color = Color(0.15, 0.11, 0.07, 1)
+Button/colors/font_hover_color = Color(0.08, 0.06, 0.04, 1)
+Button/colors/font_pressed_color = Color(0.08, 0.06, 0.04, 1)
+Button/colors/font_disabled_color = Color(0.4, 0.36, 0.3, 1)
+Button/styles/normal = SubResource("StyleBoxTexture_button_normal")
+Button/styles/hover = SubResource("StyleBoxTexture_button_hover")
+Button/styles/pressed = SubResource("StyleBoxTexture_button_pressed")
+Button/styles/focus = SubResource("StyleBoxTexture_button_normal")
+Button/styles/disabled = SubResource("StyleBoxTexture_button_normal")
+LineEdit/font_sizes/font_size = 11
+LineEdit/colors/font_color = Color(0.93, 0.93, 0.95, 1)
+LineEdit/colors/font_placeholder_color = Color(0.6, 0.6, 0.65, 1)
+LineEdit/styles/normal = SubResource("StyleBoxTexture_field_normal")
+LineEdit/styles/focus = SubResource("StyleBoxTexture_field_focus")
+OptionButton/font_sizes/font_size = 11
+OptionButton/colors/font_color = Color(0.93, 0.93, 0.95, 1)
+OptionButton/styles/normal = SubResource("StyleBoxTexture_field_normal")
+OptionButton/styles/hover = SubResource("StyleBoxTexture_field_normal")
+OptionButton/styles/pressed = SubResource("StyleBoxTexture_field_focus")
+OptionButton/styles/focus = SubResource("StyleBoxTexture_field_focus")
+OptionButton/styles/disabled = SubResource("StyleBoxTexture_field_normal")
+Label/font_sizes/font_size = 12
+PanelContainer/styles/panel = SubResource("StyleBoxTexture_panel")
+Panel/styles/panel = SubResource("StyleBoxTexture_panel")

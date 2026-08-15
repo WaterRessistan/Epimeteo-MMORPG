@@ -132,6 +132,14 @@ public sealed class Session : IWorldPeer
     /// <summary>Puede usar los comandos de admin del chat (FASE-11 §2 D6). Se fija una vez, al autenticar.</summary>
     public bool IsAdmin { get; internal set; }
 
+    /// <summary>
+    /// Usuario de la cuenta autenticada. Además de <see cref="IsAdmin"/>, es lo que
+    /// <c>GameWorld</c> compara contra la lista blanca de admins de verdad (pedido explícito de
+    /// sesión: que sólo una cuenta concreta pueda usar los comandos, no cualquiera a quien se le
+    /// active <c>accounts.is_admin</c> por error).
+    /// </summary>
+    public string Username { get; internal set; } = string.Empty;
+
     /// <summary>Personaje elegido. 0 hasta que <c>CharSelect</c> tiene éxito.</summary>
     public long CharacterId { get; internal set; }
 

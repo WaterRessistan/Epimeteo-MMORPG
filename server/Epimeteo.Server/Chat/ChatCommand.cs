@@ -37,6 +37,17 @@ public abstract record ChatCommand
     /// <summary><c>/give Nombre defKey cantidad</c>. Sólo admins.</summary>
     public sealed record Give(string TargetName, string DefKey, int Quantity) : ChatCommand;
 
+    /// <summary><c>/heal Nombre</c>: vida y maná al máximo al instante. Sólo admins.</summary>
+    public sealed record Heal(string TargetName) : ChatCommand;
+
+    /// <summary>
+    /// <c>/xp Nombre cantidad</c>: concede experiencia directamente, reutilizando
+    /// <c>LevelingSystem.GrantXp</c> tal cual (sube de nivel las veces que haga falta, reparte
+    /// puntos de stat y cura del todo en cada nivel — nada nuevo, sólo un atajo para probar
+    /// contenido sin cazar monstruos). Sólo admins.
+    /// </summary>
+    public sealed record GrantXp(string TargetName, long Amount) : ChatCommand;
+
     /// <summary>Un <c>/algo</c> que no se reconoce, o con argumentos que no cuadran.</summary>
     public sealed record Invalid(ResultCode Code) : ChatCommand;
 }

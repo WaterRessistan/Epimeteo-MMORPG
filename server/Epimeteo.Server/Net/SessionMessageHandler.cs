@@ -343,7 +343,8 @@ public sealed class SessionMessageHandler
             character.Xp,
             character.StatPoints,
             session.AccountId,
-            session.IsAdmin);
+            session.IsAdmin,
+            session.Username);
 
         session.Send(Opcode.WorldEnter, new S2CWorldEnter
         {
@@ -437,6 +438,7 @@ public sealed class SessionMessageHandler
         {
             session.AccountId = outcome.AccountId;
             session.IsAdmin = outcome.IsAdmin;
+            session.Username = outcome.Username;
             session.State = SessionState.Authenticated;
             _log.Information("Sesión {SessionId} autenticada como cuenta {AccountId}", session.Id, outcome.AccountId);
         }

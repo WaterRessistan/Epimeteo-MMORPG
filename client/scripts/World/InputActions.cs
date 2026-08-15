@@ -25,6 +25,9 @@ public static class InputActions
     /// <summary>Atacar al objetivo más cercano (espacio). El servidor decide si vale (Fase 9).</summary>
     public const string Attack = "attack";
 
+    /// <summary>Cambiar el arma equipada por la siguiente que haya en la bolsa de armas (Q).</summary>
+    public const string SwapWeapon = "swap_weapon";
+
     /// <summary>Lanzar la habilidad del hueco 1 (tecla 1). Fase 10.</summary>
     public const string Skill1 = "skill_1";
 

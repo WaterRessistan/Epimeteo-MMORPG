@@ -107,6 +107,35 @@ public sealed class ChatCommandParserTests
         Assert.IsType<ChatCommand.Invalid>(ChatCommandParser.Parse(ChatChannel.Global, "/give Bob item.iron_sword 0"));
 
     [Fact]
+    public void HealConNombre()
+    {
+        var command = ChatCommandParser.Parse(ChatChannel.Global, "/heal Bob");
+        var heal = Assert.IsType<ChatCommand.Heal>(command);
+        Assert.Equal("Bob", heal.TargetName);
+    }
+
+    [Fact]
+    public void HealSinNombreEsInvalido() =>
+        Assert.IsType<ChatCommand.Invalid>(ChatCommandParser.Parse(ChatChannel.Global, "/heal"));
+
+    [Fact]
+    public void XpConNombreYCantidad()
+    {
+        var command = ChatCommandParser.Parse(ChatChannel.Global, "/xp Bob 5000");
+        var grantXp = Assert.IsType<ChatCommand.GrantXp>(command);
+        Assert.Equal("Bob", grantXp.TargetName);
+        Assert.Equal(5000, grantXp.Amount);
+    }
+
+    [Fact]
+    public void XpConCantidadNoPositivaEsInvalido() =>
+        Assert.IsType<ChatCommand.Invalid>(ChatCommandParser.Parse(ChatChannel.Global, "/xp Bob 0"));
+
+    [Fact]
+    public void XpConCantidadNoNumericaEsInvalido() =>
+        Assert.IsType<ChatCommand.Invalid>(ChatCommandParser.Parse(ChatChannel.Global, "/xp Bob muchisima"));
+
+    [Fact]
     public void ComandoDesconocidoEsInvalido()
     {
         var command = ChatCommandParser.Parse(ChatChannel.Global, "/nosetoloqueesesto");

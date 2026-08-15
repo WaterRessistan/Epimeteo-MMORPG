@@ -39,6 +39,9 @@ public sealed class PlayerEntity : WorldEntity
     /// <summary>Si puede usar los comandos de admin del chat (FASE-11 §2 D6).</summary>
     public bool IsAdmin { get; init; }
 
+    /// <summary>Usuario de la cuenta. Junto a <see cref="IsAdmin"/>, decide si de verdad puede usar los comandos de admin (<c>GameWorld.IsAuthorizedAdmin</c>).</summary>
+    public string Username { get; init; } = string.Empty;
+
     /// <summary>Cola de inputs pendientes de simular.</summary>
     public InputQueue Inputs { get; }
 

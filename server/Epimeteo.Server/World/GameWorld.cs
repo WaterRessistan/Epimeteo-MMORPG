@@ -1461,6 +1461,14 @@ public sealed class GameWorld
                 HandleGive(player, give);
                 break;
 
+            case ChatCommand.Heal heal:
+                HandleHeal(player, heal);
+                break;
+
+            case ChatCommand.GrantXp grantXp:
+                HandleGrantXp(player, grantXp);
+                break;
+
             case ChatCommand.Invalid invalid:
                 SendChatFailure(player, invalid.Code);
                 break;
@@ -1533,6 +1541,8 @@ public sealed class GameWorld
         "/ban <nombre> <horas> [motivo]",
         "/teleport <nombre>",
         "/give <nombre> <defKey> <cantidad>",
+        "/heal <nombre>",
+        "/xp <nombre> <cantidad>",
     ];
 
     /// <summary><c>/help</c>: la lista fija de arriba. Los de admin salen igual para todos — quien no lo sea sólo verá <c>NotAuthorized</c> si los prueba.</summary>
@@ -1545,7 +1555,7 @@ public sealed class GameWorld
     /// </summary>
     private void HandleKick(PlayerEntity admin, ChatCommand.Kick kick)
     {
-        if (!admin.IsAdmin)
+        if (!IsAuthorizedAdmin(admin))
         {
             SendChatFailure(admin, ResultCode.NotAuthorized);
             return;
@@ -1570,7 +1580,7 @@ public sealed class GameWorld
     /// </summary>
     private void HandleBan(PlayerEntity admin, ChatCommand.Ban ban)
     {
-        if (!admin.IsAdmin)
+        if (!IsAuthorizedAdmin(admin))
         {
             SendChatFailure(admin, ResultCode.NotAuthorized);
             return;
@@ -1595,7 +1605,7 @@ public sealed class GameWorld
     /// </summary>
     private void HandleTeleport(Zone adminZone, PlayerEntity admin, ChatCommand.Teleport teleport, long nowMs)
     {
-        if (!admin.IsAdmin)
+        if (!IsAuthorizedAdmin(admin))
         {
             SendChatFailure(admin, ResultCode.NotAuthorized);
             return;
@@ -1618,7 +1628,7 @@ public sealed class GameWorld
     /// <summary>Mete un ítem nuevo en la bolsa del objetivo, con la misma validación que cualquier otra alta (loot, compra).</summary>
     private void HandleGive(PlayerEntity admin, ChatCommand.Give give)
     {
-        if (!admin.IsAdmin)
+        if (!IsAuthorizedAdmin(admin))
         {
             SendChatFailure(admin, ResultCode.NotAuthorized);
             return;
@@ -1643,10 +1653,104 @@ public sealed class GameWorld
         ConfirmAdminAction(admin, target.Name);
     }
 
+    /// <summary>
+    /// Lista blanca de cuentas que de verdad pueden usar los comandos de admin del chat, además de
+    /// <c>accounts.is_admin</c> (pedido explícito de sesión: "asegúrate que el único que pueda
+    /// hacer eso sea WaterRessistan"). <c>is_admin</c> se concede por SQL a mano y nada impide que
+    /// alguien lo active sin querer en otra cuenta el día de mañana; esta lista es la comprobación
+    /// de más que hace que aunque eso pase, sólo esta cuenta concreta pueda usarlo — igual que
+    /// <c>ServerOptions.MetricsToken</c> es la comprobación de más sobre <c>/status</c>.
+    /// <para>
+    /// Por username de cuenta, no por nombre de personaje: una cuenta puede tener hasta 5
+    /// personajes (CLAUDE.md §1) y el privilegio es de la cuenta, no de cuál de ellos esté jugando
+    /// en cada momento.
+    /// </para>
+    /// </summary>
+    private static readonly HashSet<string> AuthorizedAdminUsernames =
+        new(StringComparer.OrdinalIgnoreCase) { "WaterRessistan" };
+
+    /// <summary>La comprobación real detrás de todo comando de admin: hace falta <b>las dos cosas</b>, no sólo una.</summary>
+    private static bool IsAuthorizedAdmin(PlayerEntity player) =>
+        player.IsAdmin && AuthorizedAdminUsernames.Contains(player.Username);
+
     /// <summary>Busca por nombre en todas las zonas (FASE-11 §2 D4) — no sólo la del que pregunta.</summary>
     private PlayerEntity? FindPlayerByName(string name) => _zones.Values
         .SelectMany(zone => zone.Players)
         .FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Igual que <see cref="FindPlayerByName"/> pero también con la zona: <c>/heal</c> y
+    /// <c>/xp</c> necesitan mandar <c>EntityStats</c> a quien tenga al objetivo en su área de
+    /// interés, que es la zona del objetivo, no la del admin que manda el comando.
+    /// </summary>
+    private (Zone Zone, PlayerEntity Player)? FindPlayerZoneByName(string name)
+    {
+        foreach (var zone in _zones.Values)
+        {
+            var player = zone.Players.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (player is not null)
+            {
+                return (zone, player);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Cura vida y maná al máximo al instante (hueco real, pedido explícito de sesión: no había
+    /// forma de reponerse a mano para probar contenido, aparte de una poción de vida — de maná no
+    /// existe ninguna — o de subir de nivel).
+    /// </summary>
+    private void HandleHeal(PlayerEntity admin, ChatCommand.Heal heal)
+    {
+        if (!IsAuthorizedAdmin(admin))
+        {
+            SendChatFailure(admin, ResultCode.NotAuthorized);
+            return;
+        }
+
+        if (FindPlayerZoneByName(heal.TargetName) is not { } found)
+        {
+            SendChatFailure(admin, ResultCode.TargetNotFound);
+            return;
+        }
+
+        var (targetZone, target) = found;
+        target.Hp = target.HpMax;
+        target.Mp = target.MpMax;
+        target.VitalsDirty = true;
+        BroadcastEntityStats(targetZone, target);
+
+        LogAdminAction(admin, target, AdminAction.Heal, reason: string.Empty);
+        ConfirmAdminAction(admin, target.Name);
+    }
+
+    /// <summary>
+    /// Concede XP a mano (mismo hueco que <see cref="HandleHeal"/>): reutiliza el
+    /// <see cref="GrantXp(Zone, PlayerEntity, long)"/> que ya usan las recompensas de combate tal
+    /// cual, así que subir de nivel por este camino sube de nivel de verdad — mismos puntos de
+    /// stat, misma curación al cruzar de nivel, nada nuevo que probar.
+    /// </summary>
+    private void HandleGrantXp(PlayerEntity admin, ChatCommand.GrantXp grantXp)
+    {
+        if (!IsAuthorizedAdmin(admin))
+        {
+            SendChatFailure(admin, ResultCode.NotAuthorized);
+            return;
+        }
+
+        if (FindPlayerZoneByName(grantXp.TargetName) is not { } found)
+        {
+            SendChatFailure(admin, ResultCode.TargetNotFound);
+            return;
+        }
+
+        var (targetZone, target) = found;
+        GrantXp(targetZone, target, grantXp.Amount);
+        LogAdminAction(admin, target, AdminAction.GrantXp, reason: string.Empty, quantity: (int)Math.Min(grantXp.Amount, int.MaxValue));
+        ConfirmAdminAction(admin, target.Name);
+    }
 
     private void LogAdminAction(
         PlayerEntity admin, PlayerEntity target, AdminAction action, string reason,
@@ -1763,9 +1867,9 @@ public sealed class GameWorld
     }
 
     /// <summary>
-    /// Barrido de combate: repone monstruos, caduca sacos de loot, expira flags de combate y saca
-    /// del mundo a quien pidió salir estando en combate y ya cumplió sus 10 s (FASE-09 §2 D11).
-    /// Una vez por segundo: nada de esto necesita resolución de tick.
+    /// Barrido de combate: repone monstruos, caduca sacos de loot, expira flags de combate,
+    /// regenera vida/maná y saca del mundo a quien pidió salir estando en combate y ya cumplió sus
+    /// 10 s (FASE-09 §2 D11). Una vez por segundo: nada de esto necesita resolución de tick.
     /// </summary>
     private void SweepCombat(long tick, long nowMs)
     {
@@ -1801,8 +1905,39 @@ public sealed class GameWorld
                         player.CharacterId);
                     RemoveFrom(zone, player.Peer.Id, force: true);
                 }
+
+                RegenPlayer(zone, player);
             }
         }
+    }
+
+    /// <summary>
+    /// Regeneración pasiva de vida/maná (hallazgo real de esta sesión, no una fase planeada: el
+    /// maná no se recuperaba nunca, con nada — ni con el tiempo, ni <c>content/items/</c> tiene una
+    /// poción de maná. Cualquier personaje quedaba definitivamente sin poder lanzar habilidades en
+    /// cuanto gastaba el maná inicial). Un muerto no regenera: está esperando reaparición, no
+    /// jugando. <see cref="RegenFormulas"/> es pura y ya tiene sus propios tests; esto sólo la
+    /// llama una vez por segundo y manda lo que cambió, mismo patrón que un golpe o una curación.
+    /// </summary>
+    private static void RegenPlayer(Zone zone, PlayerEntity player)
+    {
+        if (player.IsDead)
+        {
+            return;
+        }
+
+        var newHp = RegenFormulas.Regen(player.Hp, player.HpMax, RegenFormulas.HpRegenPerSecondFraction, elapsedSeconds: 1);
+        var newMp = RegenFormulas.Regen(player.Mp, player.MpMax, RegenFormulas.MpRegenPerSecondFraction, elapsedSeconds: 1);
+
+        if (newHp == player.Hp && newMp == player.Mp)
+        {
+            return;
+        }
+
+        player.Hp = newHp;
+        player.Mp = newMp;
+        player.VitalsDirty = true;
+        BroadcastEntityStats(zone, player);
     }
 
     // ── Granja ───────────────────────────────────────────────────────────

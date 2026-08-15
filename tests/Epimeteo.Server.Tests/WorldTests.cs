@@ -105,7 +105,8 @@ public sealed class WorldTests
     /// </summary>
     private const int TestEntityIdBase = 1000;
 
-    private static WorldJoinRequest VillageJoin(int entityId, Vec2 position, long characterId, long gold = 0, bool isAdmin = false) => new(
+    private static WorldJoinRequest VillageJoin(
+        int entityId, Vec2 position, long characterId, long gold = 0, bool isAdmin = false, string username = "") => new(
         TestEntityIdBase + entityId,
         characterId,
         $"Jugador{entityId}",
@@ -126,7 +127,7 @@ public sealed class WorldTests
         Gold: gold,
         Level: 1,
         Xp: 0,
-        StatPoints: 0, AccountId: entityId, IsAdmin: isAdmin);
+        StatPoints: 0, AccountId: entityId, IsAdmin: isAdmin, Username: username);
 
     private static void PostInput(WorldInbox inbox, int sessionId, uint seq, int dirX, int dirY)
     {
@@ -369,7 +370,14 @@ public sealed class WorldTests
     {
         var (world, inbox, sink) = Build(saveIntervalSeconds: 1);
         var peer = new FakeWorldPeer(1);
-        inbox.PostControl(new PlayerJoinCommand(peer, VillageJoin(1, new Vec2(48.5f, 60.5f), 100)));
+
+        // A vida/maná completos a propósito: la regeneración pasiva (hallazgo de esta sesión fuera
+        // de fase — el maná no se recuperaba nunca) también marca los vitales sucios y dispara un
+        // guardado, así que "sin moverse" ya no basta por sí solo para que el barrido no escriba
+        // nada; con el personaje ya al máximo, la regeneración no tiene nada que hacer y el test
+        // sigue probando lo mismo que siempre: estarse quieto no escribe nada.
+        var join = VillageJoin(1, new Vec2(48.5f, 60.5f), 100) with { Hp = 120, Mp = 50 };
+        inbox.PostControl(new PlayerJoinCommand(peer, join));
 
         for (long tick = 1; tick <= 60; tick++)
         {
@@ -503,7 +511,8 @@ public sealed class WorldTests
         var (world, inbox, _) = Build();
         var admin = new FakeWorldPeer(1);
         var target = new FakeWorldPeer(2);
-        inbox.PostControl(new PlayerJoinCommand(admin, VillageJoin(1, new Vec2(48.5f, 60.5f), 100, isAdmin: true)));
+        inbox.PostControl(new PlayerJoinCommand(
+            admin, VillageJoin(1, new Vec2(48.5f, 60.5f), 100, isAdmin: true, username: "WaterRessistan")));
         inbox.PostControl(new PlayerJoinCommand(target, VillageJoin(2, new Vec2(49.5f, 60.5f), 101)));
         world.Tick(1, 50);
 
@@ -512,6 +521,30 @@ public sealed class WorldTests
 
         Assert.True(target.Kicked);
         Assert.Equal(KickReason.Banned, target.KickedReason);
+    }
+
+    /// <summary>
+    /// Pedido explícito de sesión: "asegúrate que el único que pueda hacer eso sea WaterRessistan".
+    /// <c>accounts.is_admin</c> por sí solo ya no basta — si se activase sin querer en otra cuenta,
+    /// esta cuenta seguiría sin poder usar los comandos de admin.
+    /// </summary>
+    [Fact]
+    public void IsAdminSinLaCuentaCorrecta_NoAutorizaComandosDeAdmin()
+    {
+        var (world, inbox, _) = Build();
+        var admin = new FakeWorldPeer(1);
+        var target = new FakeWorldPeer(2);
+        inbox.PostControl(new PlayerJoinCommand(
+            admin, VillageJoin(1, new Vec2(48.5f, 60.5f), 100, isAdmin: true, username: "OtraCuenta")));
+        inbox.PostControl(new PlayerJoinCommand(target, VillageJoin(2, new Vec2(49.5f, 60.5f), 101)));
+        world.Tick(1, 50);
+
+        PostChat(inbox, 1, ChatChannel.Global, "/kick Jugador2 se porta mal");
+        world.Tick(2, 100);
+
+        Assert.False(target.Kicked);
+        var failure = admin.Messages<S2CSystemMessage>(Opcode.SystemMessage).Single();
+        Assert.Equal($"chat.{ResultCode.NotAuthorized}", failure.Key);
     }
 
     [Fact]

@@ -1,6 +1,7 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://scripts/Ui/RegisterScreen.cs" id="1_screen"]
+[ext_resource type="Theme" path="res://resources/ui/CompactUiTheme.tres" id="2_theme"]
 
 [node name="Register" type="Control"]
 layout_mode = 3
@@ -9,6 +10,7 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+theme = ExtResource("2_theme")
 script = ExtResource("1_screen")
 
 [node name="Background" type="ColorRect" parent="."]
@@ -20,6 +22,20 @@ grow_horizontal = 2
 grow_vertical = 2
 color = Color(0.078, 0.086, 0.129, 1)
 
+[node name="Card" type="PanelContainer" parent="."]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -98.0
+offset_top = -83.0
+offset_right = 98.0
+offset_bottom = 83.0
+grow_horizontal = 2
+grow_vertical = 2
+
 [node name="Layout" type="VBoxContainer" parent="."]
 layout_mode = 1
 anchors_preset = 8
@@ -28,12 +44,12 @@ anchor_top = 0.5
 anchor_right = 0.5
 anchor_bottom = 0.5
 offset_left = -90.0
-offset_top = -90.0
+offset_top = -75.0
 offset_right = 90.0
-offset_bottom = 90.0
+offset_bottom = 75.0
 grow_horizontal = 2
 grow_vertical = 2
-theme_override_constants/separation = 6
+theme_override_constants/separation = 4
 
 [node name="Title" type="Label" parent="Layout"]
 layout_mode = 2
@@ -68,7 +84,7 @@ autowrap_mode = 2
 [node name="Buttons" type="HBoxContainer" parent="Layout"]
 layout_mode = 2
 alignment = 1
-theme_override_constants/separation = 8
+theme_override_constants/separation = 6
 
 [node name="Register" type="Button" parent="Layout/Buttons"]
 layout_mode = 2

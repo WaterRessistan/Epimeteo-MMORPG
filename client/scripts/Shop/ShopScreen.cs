@@ -45,11 +45,15 @@ public partial class ShopScreen : CanvasLayer
     {
         _net = GetNode<NetClient>("/root/NetClient");
 
+        // Mismo motivo que InventoryScreen: el canvas base es 480x270, así que el panel tiene
+        // que caber entero y las bolsas (hasta 30 huecos de 40px) van en un ScrollContainer.
+        var theme = GD.Load<Theme>("res://resources/ui/CompactUiTheme.tres");
         _root = new PanelContainer
         {
             Visible = false,
+            Theme = theme,
             AnchorLeft = 0.5f, AnchorRight = 0.5f, AnchorTop = 0.5f, AnchorBottom = 0.5f,
-            OffsetLeft = -260, OffsetRight = 260, OffsetTop = -180, OffsetBottom = 180,
+            OffsetLeft = -225, OffsetRight = 225, OffsetTop = -125, OffsetBottom = 125,
         };
         AddChild(_root);
 
@@ -66,8 +70,15 @@ public partial class ShopScreen : CanvasLayer
         closeButton.Pressed += RequestClose;
         header.AddChild(closeButton);
 
+        var scroll = new ScrollContainer
+        {
+            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+        };
+        layout.AddChild(scroll);
+
         _tabs = new TabContainer();
-        layout.AddChild(_tabs);
+        scroll.AddChild(_tabs);
 
         _buyList = new VBoxContainer { Name = "Comprar" };
         _tabs.AddChild(_buyList);

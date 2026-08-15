@@ -35,6 +35,8 @@ public static class ChatCommandParser
             "ban" => ParseBan(rest),
             "tp" or "teleport" => ParseTeleport(rest),
             "give" => ParseGive(rest),
+            "heal" => ParseHeal(rest),
+            "xp" => ParseGrantXp(rest),
             _ => new ChatCommand.Invalid(ResultCode.InvalidCommand),
         };
     }
@@ -104,5 +106,24 @@ public static class ChatCommandParser
         }
 
         return new ChatCommand.Give(tokens[0], tokens[1], quantity);
+    }
+
+    private static ChatCommand ParseHeal(string rest)
+    {
+        var tokens = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return tokens.Length == 1
+            ? new ChatCommand.Heal(tokens[0])
+            : new ChatCommand.Invalid(ResultCode.InvalidCommand);
+    }
+
+    private static ChatCommand ParseGrantXp(string rest)
+    {
+        var tokens = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length != 2 || !long.TryParse(tokens[1], out var amount) || amount <= 0)
+        {
+            return new ChatCommand.Invalid(ResultCode.InvalidCommand);
+        }
+
+        return new ChatCommand.GrantXp(tokens[0], amount);
     }
 }

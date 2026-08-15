@@ -22,12 +22,23 @@ namespace Epimeteo.Client.Inventory;
 public partial class ItemSlot : Control
 {
     private const int SlotSize = 40;
+    private const string AtlasManifestPath = "res://assets/atlas_registry.json";
 
     private static readonly Color BorderColor = new(0.55f, 0.55f, 0.6f);
     private static readonly Color BackgroundColor = new(0.16f, 0.16f, 0.2f);
     private static readonly Color HoverBackgroundColor = new(0.24f, 0.24f, 0.3f);
     private static readonly Color TextColor = new(0.9f, 0.9f, 0.92f);
     private static readonly Color QuantityColor = new(1f, 0.85f, 0.4f);
+
+    /// <summary>
+    /// Compartido entre todos los <see cref="ItemSlot"/> (inventario, tienda, equipo): el manifiesto
+    /// es el mismo fichero para todos, así que basta con leerlo una vez por partida en vez de una
+    /// vez por hueco. Igual que el de <c>WorldRenderer</c>, pero ahora también resuelve
+    /// <c>ItemDefinition.VisualKey</c> (FASE-12 §2 D2 lo preveía; hasta esta sesión nada lo usaba
+    /// para ítems, sólo para entidades).
+    /// </summary>
+    private static AtlasRegistry? _sharedAtlas;
+    private static readonly Dictionary<string, Texture2D> _sharedTextureCache = [];
 
     private Font? _font;
     private bool _hovering;
@@ -104,15 +115,72 @@ public partial class ItemSlot : Control
             return;
         }
 
-        // Sin catálogo de ítems en el cliente todavía en esta vista: se recorta la clave del
-        // ítem ("item.iron_sword" → "iron_sword") en vez de pedirle el nombre a un catálogo que
-        // esta pantalla no carga. Suficiente para validar la tubería (FASE-06 §7).
-        var shortName = item.DefKey.Contains('.') ? item.DefKey[(item.DefKey.IndexOf('.') + 1)..] : item.DefKey;
-        DrawString(_font, new Vector2(3, Size.Y - 20), shortName, HorizontalAlignment.Left, Size.X - 6, 8, TextColor);
+        var (texture, region) = ResolveIcon(item.DefKey);
+        if (texture is not null && region is not null)
+        {
+            const float Margin = 4f;
+            var iconRect = new Rect2(Margin, Margin, Size.X - (2 * Margin), Size.Y - (2 * Margin));
+            DrawTextureRectRegion(texture, iconRect, new Rect2(region.X, region.Y, region.Width, region.Height));
+        }
+        else
+        {
+            // Sin catálogo de ítems en el cliente todavía en esta vista: se recorta la clave del
+            // ítem ("item.iron_sword" → "iron_sword") en vez de pedirle el nombre a un catálogo
+            // que esta pantalla no carga. Mismo fallback que un <c>defKey</c> de entidad sin
+            // entrada en el atlas — no todos los ítems tienen icono todavía.
+            var shortName = item.DefKey.Contains('.') ? item.DefKey[(item.DefKey.IndexOf('.') + 1)..] : item.DefKey;
+            DrawString(_font, new Vector2(3, Size.Y - 20), shortName, HorizontalAlignment.Left, Size.X - 6, 8, TextColor);
+        }
 
         if (item.Quantity > 1)
         {
             DrawString(_font, new Vector2(3, 12), item.Quantity.ToString(), HorizontalAlignment.Left, -1, 10, QuantityColor);
+        }
+    }
+
+    /// <summary>Igual que <c>WorldRenderer.ResolveTexture</c>: sin entrada o sin fichero no es un error, sólo el fallback de texto.</summary>
+    private static (Texture2D? Texture, AtlasRegion? Region) ResolveIcon(string defKey)
+    {
+        _sharedAtlas ??= LoadAtlasRegistry();
+
+        if (!_sharedAtlas.TryGet(defKey, out var region))
+        {
+            return (null, null);
+        }
+
+        if (!_sharedTextureCache.TryGetValue(region.AtlasPath, out var texture))
+        {
+            if (!ResourceLoader.Exists(region.AtlasPath))
+            {
+                return (null, null);
+            }
+
+            texture = GD.Load<Texture2D>(region.AtlasPath);
+            _sharedTextureCache[region.AtlasPath] = texture;
+        }
+
+        return (texture, region);
+    }
+
+    private static AtlasRegistry LoadAtlasRegistry()
+    {
+        if (!Godot.FileAccess.FileExists(AtlasManifestPath))
+        {
+            return new AtlasRegistry(new Dictionary<string, AtlasRegion>());
+        }
+
+        using var file = Godot.FileAccess.Open(AtlasManifestPath, Godot.FileAccess.ModeFlags.Read);
+        var json = file.GetAsText();
+
+        try
+        {
+            return new AtlasRegistry(AtlasRegistryLoader.Parse(json, AtlasManifestPath));
+        }
+        catch (InvalidOperationException)
+        {
+            // Igual que WorldRenderer: un manifiesto roto no debe tirar el inventario por algo
+            // puramente estético.
+            return new AtlasRegistry(new Dictionary<string, AtlasRegion>());
         }
     }
 

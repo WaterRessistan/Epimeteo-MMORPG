@@ -1,1 +1,74 @@
-[]
+[
+  {
+    "key": "class.warrior",
+    "atlasPath": "res://assets/sprites/characters/kenney_tiny_dungeon/warrior.png",
+    "x": 0,
+    "y": 0,
+    "width": 16,
+    "height": 16
+  },
+  {
+    "key": "class.mage",
+    "atlasPath": "res://assets/sprites/characters/kenney_tiny_dungeon/mage.png",
+    "x": 0,
+    "y": 0,
+    "width": 16,
+    "height": 16
+  },
+  {
+    "key": "class.hybrid",
+    "atlasPath": "res://assets/sprites/characters/kenney_tiny_dungeon/hybrid.png",
+    "x": 0,
+    "y": 0,
+    "width": 16,
+    "height": 16
+  },
+  {
+    "key": "monster.slime",
+    "atlasPath": "res://assets/sprites/monsters/kenney_tiny_dungeon/slime.png",
+    "x": 0,
+    "y": 0,
+    "width": 16,
+    "height": 16
+  },
+  {
+    "key": "item.iron_sword",
+    "atlasPath": "res://assets/sprites/ui/kenney_roguelike_characters/weapon_sword.png",
+    "x": 0,
+    "y": 0,
+    "width": 16,
+    "height": 16
+  },
+  {
+    "key": "item.wooden_shield",
+    "atlasPath": "res://assets/sprites/ui/kenney_roguelike_characters/weapon_shield.png",
+    "x": 0,
+    "y": 0,
+    "width": 16,
+    "height": 16
+  },
+  {
+    "key": "item.health_potion",
+    "atlasPath": "res://assets/sprites/items/kenney_tiny_dungeon/health_potion.png",
+    "x": 0,
+    "y": 0,
+    "width": 16,
+    "height": 16
+  },
+  {
+    "key": "item.leather_chest",
+    "atlasPath": "res://assets/sprites/items/kenney_roguelike_characters/leather_chest.png",
+    "x": 0,
+    "y": 0,
+    "width": 16,
+    "height": 16
+  },
+  {
+    "key": "item.iron_ore",
+    "atlasPath": "res://assets/sprites/items/kenney_roguelike_rpg_pack/iron_ore.png",
+    "x": 0,
+    "y": 0,
+    "width": 16,
+    "height": 16
+  }
+]

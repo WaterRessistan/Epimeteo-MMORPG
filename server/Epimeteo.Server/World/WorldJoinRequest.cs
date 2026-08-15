@@ -31,6 +31,11 @@ namespace Epimeteo.Server.World;
 /// <param name="StatPoints">Puntos de stat sin gastar (Fase 10).</param>
 /// <param name="AccountId">Cuenta dueña del personaje (Fase 11: hace falta para <c>/ban</c>).</param>
 /// <param name="IsAdmin">Si la cuenta puede usar los comandos de admin del chat (FASE-11 §2 D6).</param>
+/// <param name="Username">
+/// Usuario de la cuenta. Junto a <see cref="IsAdmin"/>, decide si de verdad puede usar los
+/// comandos de admin (<c>GameWorld.IsAuthorizedAdmin</c>) — pedido explícito de sesión, para que
+/// activar <c>accounts.is_admin</c> por error en otra cuenta no baste por sí solo.
+/// </param>
 public sealed record WorldJoinRequest(
     int EntityId,
     long CharacterId,
@@ -54,4 +59,5 @@ public sealed record WorldJoinRequest(
     long Xp,
     int StatPoints,
     long AccountId,
-    bool IsAdmin);
+    bool IsAdmin,
+    string Username);

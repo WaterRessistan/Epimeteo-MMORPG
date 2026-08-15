@@ -952,10 +952,208 @@ chat (`Enter`, `T`, Fase 11). El cliente puede apuntar a
 **Pendiente de decidir, no técnico:** los datos de prueba acumulados en la BD (cuentas `Bot*`/
 `smoke_*`/`farm_*`/`pvp_*`/`prog_*`/`chat_*` de `SmokeClient`/`WorldBot` a lo largo de las
 Fases 1–12, incluidas varias ya baneadas por las pruebas de `/ban`) — si el juego se va a anunciar
-de verdad, alguien tiene que decidir si se limpian antes. Esta sesión no ha borrado nada. Y, nueva
-de esta fase: **en cuanto alguien traiga packs de arte CC0 reales**, rellenar
-`client/assets/ATTRIBUTIONS.md` y las entradas de `client/assets/atlas_registry.json` — la
-infraestructura ya está lista, sólo falta el contenido.
+de verdad, alguien tiene que decidir si se limpian antes. Esta sesión no ha borrado nada.
+
+**Actualización fuera de fase (2026-08-15):** Mario pidió explícitamente traer arte CC0 porque el
+placeholder "se veía muy soso" — deja de aplicar la salvedad de `CLAUDE.md §5`. Se trajeron packs
+de Kenney (100% CC0, ver `client/assets/ATTRIBUTIONS.md`): `tiny-dungeon` (personajes de las 3
+clases + el slime), `roguelike-rpg-pack` (tile de hierba y de muro para `WorldRenderer`) y
+`pixel-ui-pack` + `kenney-fonts` (theme de UI con paneles/botones de textura y fuente pixel,
+`client/resources/ui/CompactUiTheme.tres`). `client/assets/atlas_registry.json` ya tiene las 4
+claves (`class.warrior/mage/hybrid`, `monster.slime`); `monster.wolf` se queda sin arte a
+propósito, no había ningún lobo CC0 que encajara con el resto — cae al rectángulo de color de
+siempre, sin romper nada. Ajuste de paso: `WorldRenderer.BodyHeight` pasó de 32 a 16 px porque el
+arte real disponible es de un tile (chibi), no de dos — CLAUDE.md §2 fijaba 32 para un sprite
+dedicado que nunca llegó a existir. Verificado visualmente con capturas reales del editor Godot
+(Login/Register/CharacterSelect y los tiles/personajes en aislado); no verificado dentro de
+`World.tscn` con datos de servidor de verdad porque esta sesión no levantó un servidor local.
+`dotnet build`/`dotnet test` de la solución raíz y el validador de contenido, en verde.
+
+**Fallo real encontrado por Mario jugando contra el servidor de producción, corregido en la misma
+sesión:** `WorldRenderer.DrawTiles` sólo pintaba una esquina del mapa (una franja de ~12×8 tiles)
+y dejaba el resto de la pantalla en negro — invisible mientras los tiles eran rectángulos de color
+casi del mismo tono que el fondo, evidente en cuanto hubo textura real. Causa: con
+`window/stretch/mode="canvas_items"` (obligatorio para pixel art, CLAUDE.md §2), `GetViewportTransform()`
+lleva metida la escala de ventana (×3 a 1440×810) pero `GetViewportRect()` sigue devolviendo el
+tamaño lógico 480×270 — mezclar las dos en el cálculo de qué tiles caen en pantalla lo encogía a un
+tercio. Cambiado a `GetCanvasTransform()`, que no lleva esa escala. Bug de netcode cero: nadie
+había mirado nunca la pantalla de mundo con Godot de verdad hasta esta sesión (todas las fases
+anteriores se verificaron por protocolo con `WorldBot`/`SmokeClient`, que no dibujan nada).
+Reproducido y verificado con una escena de prueba aislada (mapa real + `WorldCamera` reales, sin
+red) antes y después del cambio, capturando con la textura del viewport en vez de x11grab (WSLg no
+composita las ventanas en la raíz X, así que herramientas como `ffmpeg -f x11grab` capturan el
+escritorio vacío aunque la ventana esté ahí — para verificación visual en este entorno hay que leer
+`get_viewport().get_texture().get_image()` desde dentro del propio proceso de Godot).
+
+De paso, Mario pidió animación de caminar y movimiento más fluido. Sin spritesheet de zancada real
+—los packs CC0 encontrados o no encajaban con el estilo chibi de `kenney_tiny_dungeon` o su fichero
+estaba detrás de un host (`itchio-mirror...r2.cloudflarestorage.com`) al que esta sandbox no tiene
+salida de red (confirmado: la API de itch.io respondía bien, la descarga del fichero en sí se
+quedaba colgada) — se implementó un bote vertical de 1 px mientras `AnimState.Walk` esté activo
+(`WorldRenderer.WalkBobOffset`), leyendo una señal que **ya calculaba el servidor** y viajaba entera
+por predicción/interpolación sin usarse en el render (`MoveState.Anim`, `Shared/Simulation/
+MovementSystem.cs`). Con fase desincronizada por posición para que no todo el mundo bote a la vez.
+Pendiente si alguien trae un spritesheet de zancada real que encaje con el estilo: sustituir el
+bote por selección de frame en `DrawEntity`.
+
+**Segunda actualización fuera de fase (2026-08-15): combate.** Mario pidió centrarse "exageradamente"
+en el combate — indicador de arma, poder cambiar de arma, mejor indicador de vida, y mucho mejor
+en general, con más assets CC0 si hacían falta. Sin tocar el servidor ni el protocolo (todo lo de
+abajo es cliente puro, usando datos que el servidor ya mandaba):
+
+- `client/scripts/Ui/CombatHud.cs` (nuevo, `CanvasLayer` en `World.tscn` junto a `WorldHud`): barras
+  de HP/MP/XP de verdad (antes texto plano en `WorldHud.Combat`), la vida vira a naranja por debajo
+  del 30%; icono de arma principal/secundaria (espada/escudo, iconos de Kenney Roguelike Characters,
+  ver `ATTRIBUTIONS.md`) con el nombre del ítem equipado; marco de objetivo (nombre + barra de vida)
+  arriba centrado, sólo visible con objetivo; barra de 3 habilidades con icono, cortina de cooldown
+  de verdad (ya no un número de texto) y bloqueo por nivel atenuado. `WorldHud` no se ha tocado —
+  sigue siendo el instrumento de diagnóstico de las Fases 4-9 (corr/err/pend), sólo dejó de ser
+  también la única fuente de info de combate.
+- `client/scripts/World/WorldRenderer.cs`: golpes de verdad ahora se ven — tinte rojo instantáneo en
+  quien recibe el golpe, un resalte en quien lo da (sustituye a una animación de ataque real: ningún
+  pack CC0 encontrado con una zancada+golpe que encajase con el estilo, mismo motivo que el bote de
+  caminar), números/palabras flotantes que suben y se desvanecen (daño blanco, crítico dorado con
+  "¡!", curación verde con "+", esquiva/bloqueo en gris) leyendo directamente `S2CCombatEvent.Kind`/
+  `Flags` — antes sólo iban a un `GD.Print`. Los cadáveres (`Hp == 0`) se dibujan atenuados en vez de
+  idénticos a un vivo.
+- `client/scripts/World/WorldScreen.cs`: **ataque libre** (pedido explícito) — mantener pulsado
+  espacio sigue pegando solo, al ritmo de `CombatConstants.AttackCooldownMs` (la misma constante
+  que valida el servidor, para no mandar golpes que el propio cliente ya sabe que van a rechazarse);
+  antes hacía falta soltar y volver a pulsar por cada golpe. **Cambio de arma** con `Q`
+  (`swap_weapon`, tecla nueva en `project.godot`): equipa la siguiente arma de la bolsa, o la quita
+  si no queda ninguna — usa `InventorySystem.TryEquip`, que ya intercambia solo lo que hubiera
+  puesto antes de vuelta a la bolsa (FASE-06 §4), así que no hizo falta tocar el servidor. Para esto
+  el cliente ahora también carga el `ItemCatalog` completo (antes sólo cargaba el `SkillCatalog` de
+  la clase) y mantiene su propio `InventoryState` espejo (mismo patrón que ya usaba
+  `InventoryScreen`, suscrito a los mismos eventos de `NetClient`).
+- **Hallazgo real al montar el HUD nuevo, no anticipado:** los tres iconos nuevos
+  (`weapon_sword.png`/`weapon_shield.png`/`skill_heal.png`) se dibujaban como cuadrados negros
+  sólidos — Godot no los había importado nunca (añadidos a mitad de sesión, sin volver a abrir el
+  editor). Sin `.import` al lado del `.png`, `ResourceLoader.Exists` devuelve falso y el icono se
+  queda en blanco/vacío; con el fondo oscuro del hueco detrás, el resultado es indistinguible de "no
+  hay textura" a simple vista. Arreglado con un pase `godot --editor --headless --import` — el mismo
+  paso que ya hacía falta correr tras traer arte nuevo, anotado ahora explícitamente para la próxima
+  vez que alguien añada un `.png` a mitad de sesión sin reabrir el editor.
+- Verificado con una escena de prueba aislada (mapa real + HUD real, sin red, con datos falsos:
+  vida baja, objetivo "Lobo", habilidad bloqueada) capturando la textura del viewport — mismo
+  método que la verificación del terreno. `dotnet build`/`dotnet test` de la solución raíz y del
+  cliente, en verde (163/163 compartidos). No probado contra un servidor real por la misma razón de
+  siempre: esta sesión no levantó uno.
+
+**Tercera actualización fuera de fase (2026-08-15): por qué "no consigo pegar".** Mario reportó que
+no podía atacar. **No era un bug de red ni de servidor — era que el cliente nunca enseñaba por qué
+fallaba un ataque.** `GameWorld.HandleAttack`/`HandleSkillCast` sí mandan `SendCombatFailure` desde
+la Fase 9 (`SystemMessage` con clave `combat.<ResultCode>`: `SafeZone`, `OutOfRange`, `OnCooldown`,
+`TargetDead`…), pero ninguna pantalla lo mostraba en ningún sitio visible durante el combate:
+`ChatScreen.OnSystemMessage` sólo mira claves `chat.*` y descarta el resto, e `InventoryScreen`
+sólo se ve con el inventario abierto. Un ataque rechazado no daba ninguna pista — se sentía
+exactamente como "no funciona". Arreglado sin tocar el servidor:
+- `client/scripts/Ui/ResultCodeText.cs`: añadidos los 11 `ResultCode` de combate/habilidades que
+  antes caían al genérico `Error inesperado (code)`.
+- `client/scripts/World/WorldScreen.cs`: nueva suscripción a `SystemMessageReceived` filtrando el
+  prefijo `combat.`, parseando el `ResultCode` del propio nombre de la clave.
+- `client/scripts/Ui/CombatHud.cs`: `ShowCombatMessage` — un aviso rojo centrado que aparece y se
+  desvanece (1.8 s) justo donde el jugador está mirando, no en un chat que puede estar cerrado.
+
+De paso, ítems con icono de verdad en vez de sólo texto (pedido explícito: "añade iconos"):
+`item.health_potion` (Kenney Tiny Dungeon), `item.leather_chest` (Kenney Roguelike Characters),
+`item.iron_ore` (Kenney Roguelike/RPG Pack) — sobre `item.iron_sword`/`item.wooden_shield`, que ya
+tenían icono desde el HUD de combate. `client/scripts/Inventory/ItemSlot.cs` ahora resuelve
+`atlas_registry.json` igual que `WorldRenderer` (caché estática compartida entre huecos: el
+manifiesto es el mismo fichero para todos). `item.copper_ring`/`item.hoe`/`item.watering_can`/
+`item.wheat`/`item.wheat_seed` se quedan sin icono — no encontré un anillo/herramienta de granja
+CC0 que encajase con el resto en el tiempo de esta sesión; caen al mismo *fallback* de texto de
+siempre, sin romper nada.
+
+Sobre el resto de lo pedido ("basarse en un MMORPG 2D existente y copiarle mecánicas e interfaces",
+"jugable al 100%, no un prototipo"): esta sesión no ha rediseñado el juego sobre otro título
+concreto porque no se especificó cuál, y sería una decisión de diseño grande para tomar por
+libre — CLAUDE.md ya fija clases/combate/mapa como decisiones cerradas. Preguntado, Mario confirmó
+seguir con las convenciones estándar del género en vez de clonar un juego concreto. "Jugable al
+100%" para un juego multijugador con servidor autoritativo no se puede verificar de verdad sin
+levantar ese servidor con Postgres — esta sesión no tenía ninguno de los dos disponibles en esta
+máquina (WSL2 de desarrollo, no el servidor de producción de las Fases 1-15).
+
+**Cuarta actualización fuera de fase (2026-08-15): por qué "no tengo maná" y "no doy ninguna
+ostia".** Tras el aviso de rechazo del punto anterior, Mario pudo por fin *ver* por qué fallaban
+sus golpes — y lo que vio fue un fallo real, no ruido: **el maná no se recuperaba nunca, con
+nada.** Ni con el tiempo, ni entrando al mundo, ni de ninguna otra forma — `content/items/` ni
+siquiera tiene una poción de maná. Cualquier personaje se quedaba permanentemente sin poder lanzar
+ninguna habilidad (toda la barra 1-3) en cuanto gastaba el maná inicial, y no había manera de
+recuperarlo dentro de una partida normal. Corregido con regeneración pasiva de verdad:
+- `shared/Epimeteo.Shared/Simulation/RegenFormulas.cs` (nuevo, puro, con tests —
+  `tests/Epimeteo.Shared.Tests/RegenFormulasTests.cs`, 6 casos incluido el redondeo mínimo de 1
+  punto/s para que un máximo pequeño como el maná de un guerrero nivel 1 (20) también suba): 3 %/s
+  de HP, 5 %/s de MP.
+- `server/Epimeteo.Server/World/GameWorld.cs`: `SweepCombat` (ya corría una vez por segundo) ahora
+  también regenera y manda `EntityStats` si algo cambió — mismo patrón que un golpe o una curación,
+  nada de infraestructura nueva. Un test existente
+  (`WorldTests.SinMoverse_ElBarridoNoEscribeNada`) asumía que estarse quieto nunca escribe nada;
+  ahora hace falta empezar a vida/maná completos para que siga siendo cierto (la regeneración no
+  tiene nada que hacer si ya está al máximo) — ajustado, no relajado.
+
+Segunda causa real encontrada, sin relación con el maná: el radio con el que el cliente elegía a
+quién atacar (`WorldScreen.TargetRangeTiles`, 2,5 tiles) se usaba **para todo** — ataque básico
+**y** habilidades. El alcance real del ataque básico es 1,5 tiles (`CombatConstants.MeleeRangeTiles`),
+así que el cliente "encontraba" objetivos que el servidor rechazaba por `OutOfRange` una fracción
+real del tiempo. Y al revés para un mago: sus hechizos llegan hasta 5-6 tiles
+(`SkillDefinition.RangeTiles`), pero ese mismo radio de 2,5 los recortaba — ni se probaba un
+objetivo que sí estaba en rango de sobra. Corregido: `FindNearestTarget` ahora recibe el alcance de
+la acción que se va a intentar (`CombatConstants.MeleeRangeTiles` para `Attack`, `skill.RangeTiles`
+por habilidad); el radio de 2,5 se queda sólo para el marco de objetivo del HUD ("quién tengo
+cerca"). De paso, ese marco ahora avisa si el objetivo está fuera de alcance de un ataque básico
+(`CombatHud.SetTarget`, nuevo parámetro `inMeleeRange`) — antes la única forma de saberlo era
+intentarlo y esperar el rechazo.
+
+Verificado: `dotnet build`/`dotnet test` de la solución completa (170 compartidos + 293 servidor,
+24 saltados por falta de Postgres, 0 fallos) y capturas reales del HUD con el marco de objetivo
+atenuado. No probado extremo a extremo contra un servidor real (sigue sin haber Postgres en esta
+máquina) — la regeneración en sí es pura y tiene test directo, pero el enganche al tick real de
+`GameWorld` sólo se ha verificado por los tests de `WorldTests`, no jugando de verdad.
+
+**Quinta actualización fuera de fase (2026-08-15): comandos de admin para probar contenido a
+mano.** Mario pidió poder ponerse al máximo y darse ítems para probar. `/give <nombre> <defKey>
+<cantidad>` ya existía (Fase 11); lo que faltaba era curarse y subir de nivel sin cazar. Dos
+comandos nuevos, mismo patrón que `/kick`/`/ban`/`/teleport`/`/give` (sólo `IsAdmin`, deja rastro en
+`admin_action_log`):
+- `/heal <nombre>`: vida y maná al máximo al instante.
+- `/xp <nombre> <cantidad>`: concede XP de verdad reutilizando el `GrantXp` que ya usan las
+  recompensas de combate — sube de nivel las veces que haga falta, reparte puntos de stat de
+  verdad (repartibles luego con el panel de stats, tecla K) y cura del todo en cada nivel. No hay
+  tope de nivel en el juego (`LevelingFormulas` es lineal sin techo), así que "al máximo" es tanta
+  XP como se pida.
+- `AdminAction` gana `Heal`/`GrantXp`; `ChatCommand`/`ChatCommandParser` los reconocen;
+  `tests/Epimeteo.Server.Tests/ChatCommandParserTests.cs` los cubre (6 casos nuevos, 21/21 en
+  verde). `dotnet test` completo sigue en verde (298 servidor + 170 compartidos, 0 fallos).
+
+**Nada de esto está activo todavía — dos pasos que sólo puede dar Mario, no esta sesión:**
+1. Que su cuenta tenga `is_admin = true` en el Postgres real (`UPDATE accounts SET is_admin = true
+   WHERE username = '<su_usuario>';`) — por defecto es `false` para todo el mundo desde que se
+   añadió la columna en la Fase 11.
+2. Desplegar este código al servidor donde juega de verdad (`bash deploy/publish.sh`) — esta sesión
+   no tiene ni Postgres ni acceso SSH a esa máquina, sólo al checkout de git de este WSL2.
+
+**Sexta actualización fuera de fase (2026-08-16): que sólo WaterRessistan pueda usar los comandos
+de admin.** Pedido explícito: `accounts.is_admin` por sí solo no bastaba —cualquier cuenta a la que
+se le active esa columna (a mano, por error, o el día que haya más de un admin) podría usar
+`/kick`/`/ban`/`/give`/`/heal`/`/xp`. Añadida una lista blanca de verdad en código,
+`GameWorld.AuthorizedAdminUsernames` (hoy sólo `"WaterRessistan"`), que se comprueba **además** de
+`is_admin` — hacen falta las dos cosas. Es por cuenta, no por personaje: la cuenta puede tener hasta
+5 personajes (CLAUDE.md §1) y el privilegio no depende de cuál esté jugando.
+
+Esto obligó a hacer viajar el `username` de la cuenta hasta donde vive la comprobación, que antes
+no existía en absoluto por esa ruta — mismo camino que ya recorre `IsAdmin` desde la Fase 11:
+`Account` (ya lo tenía) → `AuthOutcome` → `Session` → `WorldJoinRequest` → `PlayerEntity`. Sin
+cambios de protocolo (es dato interno del servidor, nunca viaja al cliente).
+
+Un test ya existente (`UnKickDeUnAdmin_ExpulsaAlObjetivoYQuedaAuditado`) asumía que `isAdmin: true`
+bastaba para autorizar — ajustado para pasar también `username: "WaterRessistan"`. Nuevo test
+específico de la regresión que se estaba cerrando:
+`IsAdminSinLaCuentaCorrecta_NoAutorizaComandosDeAdmin` (cuenta con `is_admin` activo pero username
+distinto → `NotAuthorized`, igual que si no fuera admin). `dotnet test`: 299 servidor + 170
+compartidos, 0 fallos.
+
+Recordatorio: esto tampoco está activo hasta que se despliegue (mismo paso 2 de arriba).
 
 **Verificación real que sólo puede hacer un humano:** conectar desde un móvil en datos 4G (no
 en la red del servidor) a `wss://epimeteo.waterressistan.duckdns.org/ws` con el cliente Godot, en

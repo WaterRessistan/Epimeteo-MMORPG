@@ -22,6 +22,25 @@ public static class ResultCodeText
         ResultCode.SlotOccupied => "Ese hueco ya tiene un personaje",
         ResultCode.NoCharacterSlots => "No hay huecos de personaje disponibles",
         ResultCode.CharacterNotFound => "Ese personaje no existe",
+
+        // Combate y habilidades (opcodes Attack/SkillCast, prefijo "combat." en SystemMessage —
+        // FASE-09/10). Hasta esta sesión el cliente no traducía ninguno de estos: el mensaje
+        // llegaba pero no se mostraba en ningún sitio que se viera durante el combate, así que un
+        // ataque rechazado se sentía como "no funciona" en vez de decir por qué (bug real, no sólo
+        // falta de arte).
+        ResultCode.TargetNotFound => "Ese objetivo ya no está",
+        ResultCode.TargetDead => "Ese objetivo ya está muerto",
+        ResultCode.OnCooldown => "Todavía no puedes golpear otra vez",
+        ResultCode.NotEnoughMana => "No tienes maná suficiente",
+        ResultCode.OutOfRange => "Fuera de alcance",
+        ResultCode.CannotAttackTarget => "No puedes atacar eso",
+        ResultCode.SafeZone => "No se puede atacar en zona segura",
+        ResultCode.TargetInSafeZone => "El objetivo está en zona segura",
+        ResultCode.SkillNotUnlocked => "Todavía no tienes esa habilidad",
+        ResultCode.InCombat => "Sigues en combate",
+        ResultCode.LevelDifferenceTooHigh => "Diferencia de nivel demasiado alta",
+        ResultCode.NoStatPointsAvailable => "No te quedan puntos por repartir",
+
         _ => $"Error inesperado ({code})",
     };
 

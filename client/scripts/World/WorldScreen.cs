@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Epimeteo.Client.Inventory;
 using Epimeteo.Client.Net;
 using Epimeteo.Client.Shop;
 using Epimeteo.Client.Ui;
@@ -29,9 +30,15 @@ public partial class WorldScreen : Node2D
     private const float InteractRangeTiles = 3.5f;
 
     /// <summary>
-    /// Rango cliente para elegir a quién apuntar. Generoso frente al alcance real del servidor
-    /// (<c>CombatConstants.MeleeRangeTiles</c>) por el mismo motivo que <see cref="InteractRangeTiles"/>:
-    /// pasarse sólo produce algún rechazo de más, nunca un golpe que no debía valer.
+    /// Rango para el marco de objetivo del HUD ("a quién tengo cerca"), no para decidir a quién se
+    /// ataca — eso usa el alcance real de cada acción (<c>CombatConstants.MeleeRangeTiles</c> para
+    /// <c>Attack</c>, <c>skill.RangeTiles</c> para un lanzamiento). <b>Bug real corregido esta
+    /// sesión:</b> antes este mismo valor (2,5 tiles) se usaba también para elegir a quién atacar
+    /// con la tecla básica, más ancho que el alcance real del cuerpo a cuerpo (1,5) — el cliente
+    /// "encontraba" un objetivo que el servidor rechazaba por <c>OutOfRange</c> una fracción del
+    /// tiempo, y para los hechizos de mago (hasta 6 tiles) era al revés: este radio los recortaba y
+    /// ni siquiera se probaba un objetivo que sí estaba en rango. Es parte de lo que Mario reportó
+    /// como "no consigo pegar".
     /// </summary>
     private const float TargetRangeTiles = 2.5f;
 
@@ -50,13 +57,25 @@ public partial class WorldScreen : Node2D
 
     private static readonly string[] SkillActionKeys = [InputActions.Skill1, InputActions.Skill2, InputActions.Skill3];
 
+    /// <summary>
+    /// Cadencia del ataque básico si se mantiene pulsado (D-QoL de esta sesión, pedido por Mario:
+    /// "que se pueda atacar libremente" en vez de una pulsación por golpe). El servidor sigue
+    /// siendo quien valida el cooldown real (FASE-09); esto sólo evita mandar ataques que el propio
+    /// cliente ya sabe que van a rechazarse por <c>OnCooldown</c>, usando la misma constante que usa
+    /// el servidor (<see cref="CombatConstants.AttackCooldownMs"/>) para no desincronizarse de ella.
+    /// </summary>
+    private double _attackCooldownRemainingMs;
+
     private NetClient _net = null!;
     private WorldRenderer _renderer = null!;
     private WorldCamera _camera = null!;
     private WorldHud _hud = null!;
+    private CombatHud _combatHud = null!;
     private ShopScreen _shop = null!;
 
     private SkillDefinition[] _classSkills = [];
+    private ItemCatalog? _items;
+    private readonly InventoryState _inventory = new();
 
     private LocalPlayer? _local;
     private int _myEntityId;
@@ -65,6 +84,8 @@ public partial class WorldScreen : Node2D
     private ZoneFlags _regionFlags = ZoneFlags.None;
     private int _myHp;
     private int _myHpMax;
+    private int _myMp;
+    private int _myMpMax;
 
     /// <inheritdoc />
     public override void _Ready()
@@ -73,6 +94,7 @@ public partial class WorldScreen : Node2D
         _renderer = GetNode<WorldRenderer>("Renderer");
         _camera = GetNode<WorldCamera>("Camera");
         _hud = GetNode<WorldHud>("Hud/WorldHud");
+        _combatHud = GetNode<CombatHud>("CombatHud");
         _shop = GetNode<ShopScreen>("ShopScreen");
 
         var enter = _net.LastWorldEnter;
@@ -109,11 +131,21 @@ public partial class WorldScreen : Node2D
             _classSkills = [.. skills.ForClass(classKey).OrderBy(s => s.RequiredLevel)];
         }
 
+        // El catálogo de ítems completo (no sólo el del personaje, a diferencia de las
+        // habilidades): hace falta para saber a qué EquipSlot le toca cada arma de la bolsa al
+        // cambiar de arma con Q (HandleSwapWeapon), y para el icono del arma equipada en el HUD.
+        if (contentRoot is not null)
+        {
+            _items = new ItemCatalog(contentRoot);
+        }
+
         _myEntityId = enter.MyEntityId;
-        // HpMax no viaja en WorldEnter (CharacterStats sólo lleva la vida actual): lo trae el
-        // EquipmentUpdate que llega justo después, porque depende del equipo (FASE-06 §2 D5).
+        // HpMax/MpMax no viajan en WorldEnter (CharacterStats sólo lleva vida/maná actuales): los
+        // trae el EquipmentUpdate que llega justo después, porque dependen del equipo (FASE-06 §2 D5).
         _myHp = enter.Stats.Hp;
         _myHpMax = enter.Stats.Hp;
+        _myMp = enter.Stats.Mp;
+        _myMpMax = enter.Stats.Mp;
 
         _renderer.SetMap(map);
         _camera.SetMap(map);
@@ -124,6 +156,7 @@ public partial class WorldScreen : Node2D
         _renderer.LocalName = _net.SelectedCharacter?.Name ?? string.Empty;
         _renderer.LocalPalette = _net.SelectedCharacter?.PaletteIndex ?? 0;
         _renderer.LocalDefKey = _net.SelectedCharacter?.ClassKey ?? string.Empty;
+        _renderer.LocalEntityId = _myEntityId;
         _camera.FollowTile(_local.RenderPos);
 
         _net.SnapshotReceived += OnSnapshot;
@@ -134,6 +167,9 @@ public partial class WorldScreen : Node2D
         _net.EquipmentUpdateReceived += OnEquipmentUpdate;
         _net.EntityDeathReceived += OnEntityDeath;
         _net.CombatEventReceived += OnCombatEvent;
+        _net.InventoryFullReceived += OnInventoryFull;
+        _net.InventoryDeltaReceived += OnInventoryDelta;
+        _net.SystemMessageReceived += OnCombatSystemMessage;
         _net.Kicked += OnKicked;
 
         // Hasta aquí sólo se ha preparado el cliente. WorldReady le dice al servidor que ya puede
@@ -152,6 +188,9 @@ public partial class WorldScreen : Node2D
         _net.EquipmentUpdateReceived -= OnEquipmentUpdate;
         _net.EntityDeathReceived -= OnEntityDeath;
         _net.CombatEventReceived -= OnCombatEvent;
+        _net.InventoryFullReceived -= OnInventoryFull;
+        _net.InventoryDeltaReceived -= OnInventoryDelta;
+        _net.SystemMessageReceived -= OnCombatSystemMessage;
         _net.Kicked -= OnKicked;
     }
 
@@ -172,12 +211,14 @@ public partial class WorldScreen : Node2D
         }
 
         _camera.FollowTile(_local.RenderPos);
+        _renderer.LocalIsAlive = _myHp > 0;
         _renderer.QueueRedraw();
         TickSkillCooldowns(delta);
         UpdateHud();
         HandleInteract();
-        HandleAttack();
+        HandleAttack(delta);
         HandleSkillCast();
+        HandleSwapWeapon();
     }
 
     private void TickSkillCooldowns(double delta)
@@ -234,7 +275,7 @@ public partial class WorldScreen : Node2D
             }
             else
             {
-                var target = FindNearestTarget(_local.Current.Pos);
+                var target = FindNearestTarget(_local.Current.Pos, skill.RangeTiles);
                 if (target is null)
                 {
                     continue;
@@ -245,6 +286,7 @@ public partial class WorldScreen : Node2D
 
             _net.SendSkillCast(skill.Key, targetId);
             _skillCooldowns[skill.Key] = skill.CooldownMs / 1000.0;
+            _renderer.NotifyAttackSwing(_myEntityId);
         }
     }
 
@@ -252,25 +294,78 @@ public partial class WorldScreen : Node2D
     /// Tecla <c>attack</c> (espacio): pega al objetivo atacable más cercano. El cliente sólo elige
     /// a quién apuntar; si vale o no lo decide el servidor (FASE-09 §2 D3), así que aquí no se
     /// comprueba ni zona ni alcance — sólo se evita mandar un ataque sin nadie delante.
+    /// <para>
+    /// <b>Ataque libre (pedido por Mario):</b> mantener pulsado sigue pegando solo, al ritmo real
+    /// del servidor (<see cref="CombatConstants.AttackCooldownMs"/>) — antes hacía falta soltar y
+    /// volver a pulsar por cada golpe, que es fricción de UI, no una regla del juego.
+    /// </para>
     /// </summary>
-    private void HandleAttack()
+    private void HandleAttack(double deltaSeconds)
     {
-        if (!Input.IsActionJustPressed(InputActions.Attack) || _local is null)
+        if (_attackCooldownRemainingMs > 0)
+        {
+            _attackCooldownRemainingMs -= deltaSeconds * 1000.0;
+        }
+
+        if (_local is null || !Input.IsActionPressed(InputActions.Attack) || _attackCooldownRemainingMs > 0)
         {
             return;
         }
 
-        var target = FindNearestTarget(_local.Current.Pos);
-        if (target is not null)
+        var target = FindNearestTarget(_local.Current.Pos, CombatConstants.MeleeRangeTiles);
+        if (target is null)
         {
-            _net.SendAttack(target.Id);
+            return;
+        }
+
+        _net.SendAttack(target.Id);
+        _attackCooldownRemainingMs = CombatConstants.AttackCooldownMs;
+        _renderer.NotifyAttackSwing(_myEntityId);
+    }
+
+    /// <summary>
+    /// Tecla <c>swap_weapon</c> (Q, pedida por Mario: "que podamos cambiar de arma si la
+    /// tenemos"): equipa la siguiente arma de mano principal que haya en la bolsa de armas, o la
+    /// quita si no queda ninguna — <c>InventorySystem.TryEquip</c> ya intercambia solo lo que
+    /// hubiera puesto antes de vuelta a la bolsa (FASE-06 §4), así que aquí sólo hace falta elegir
+    /// el hueco de origen.
+    /// </summary>
+    private void HandleSwapWeapon()
+    {
+        if (!Input.IsActionJustPressed(InputActions.SwapWeapon) || _items is null)
+        {
+            return;
+        }
+
+        byte? nextSlot = null;
+        foreach (var ((container, slot), item) in _inventory.Bags)
+        {
+            if (container != ContainerId.WeaponBag)
+            {
+                continue;
+            }
+
+            if (_items.TryGet(item.DefKey, out var def) && def.EquipCategory == EquipCategory.MainHand &&
+                (nextSlot is null || slot < nextSlot))
+            {
+                nextSlot = slot;
+            }
+        }
+
+        if (nextSlot is { } slotToEquip)
+        {
+            _net.SendEquip(ContainerId.WeaponBag, slotToEquip, EquipSlot.MainHand);
+        }
+        else if (_inventory.EquippedAt(EquipSlot.MainHand) is not null)
+        {
+            _net.SendUnequip(EquipSlot.MainHand);
         }
     }
 
-    private RemoteEntity? FindNearestTarget(Vec2 fromPos)
+    private RemoteEntity? FindNearestTarget(Vec2 fromPos, float rangeTiles = TargetRangeTiles)
     {
         RemoteEntity? nearest = null;
-        var nearestDistanceSq = TargetRangeTiles * TargetRangeTiles;
+        var nearestDistanceSq = rangeTiles * rangeTiles;
 
         foreach (var remote in _remotes.Values)
         {
@@ -296,6 +391,8 @@ public partial class WorldScreen : Node2D
         {
             _myHp = stats.Hp;
             _myHpMax = stats.HpMax;
+            _myMp = stats.Mp;
+            _myMpMax = stats.MpMax;
             return;
         }
 
@@ -306,7 +403,16 @@ public partial class WorldScreen : Node2D
         }
     }
 
-    private void OnEquipmentUpdate(S2CEquipmentUpdate update) => _myHpMax = update.HpMax;
+    private void OnEquipmentUpdate(S2CEquipmentUpdate update)
+    {
+        _myHpMax = update.HpMax;
+        _myMpMax = update.MpMax;
+        _inventory.ApplyEquipment(update);
+    }
+
+    private void OnInventoryFull(S2CInventoryFull full) => _inventory.ApplyFull(full);
+
+    private void OnInventoryDelta(S2CInventoryDelta delta) => _inventory.ApplyDelta(delta);
 
     private void OnEntityDeath(S2CEntityDeath death)
     {
@@ -316,12 +422,78 @@ public partial class WorldScreen : Node2D
         }
     }
 
+    /// <summary>
+    /// Traduce el golpe que cuenta el servidor a lo que se ve: número flotante sobre la víctima
+    /// (color y "¡crítico!" según <c>Kind</c>/<c>Flags</c>), tinte rojo instantáneo en la víctima y
+    /// resalte en quien pega (FASE-09, opcode 0x8060 — llega a todo el que tenga a la víctima en su
+    /// área de interés, no sólo a los dos implicados, así que esto pinta lo mismo para cualquiera
+    /// que lo vea).
+    /// </summary>
     private void OnCombatEvent(S2CCombatEvent evt)
     {
-        // Sin arte todavía: los números de daño van al log, que es el instrumento con el que se
-        // verifica esta fase sin poder abrir Godot (mismo criterio que el HUD de la Fase 4).
-        var critical = evt.Flags.HasFlag(CombatEventFlags.Critical) ? " ¡crítico!" : string.Empty;
-        GD.Print($"{evt.AttackerId} → {evt.TargetId}: {evt.Amount}{critical}");
+        if (evt.AttackerId != _myEntityId)
+        {
+            // El ataque propio ya se resalta al mandarlo (HandleAttack/HandleSkillCast) para que
+            // se sienta inmediato sin esperar la vuelta de red; esto es para verlo en los demás.
+            _renderer.NotifyAttackSwing(evt.AttackerId);
+        }
+
+        if (PositionOf(evt.TargetId) is not { } targetPos)
+        {
+            return;
+        }
+
+        switch (evt.Kind)
+        {
+            case CombatEventKind.Damage:
+                _renderer.NotifyHit(evt.TargetId);
+                var critical = evt.Flags.HasFlag(CombatEventFlags.Critical);
+                var text = critical ? $"¡{evt.Amount}!" : evt.Amount.ToString();
+                _renderer.SpawnFloatingText(targetPos, text, critical ? WorldRenderer.CritColor : WorldRenderer.DamageColor);
+                break;
+            case CombatEventKind.Heal:
+                _renderer.SpawnFloatingText(targetPos, $"+{evt.Amount}", WorldRenderer.HealColor);
+                break;
+            case CombatEventKind.Miss:
+                var label = evt.Flags.HasFlag(CombatEventFlags.Blocked) ? "bloqueado" : "esquiva";
+                _renderer.SpawnFloatingText(targetPos, label, WorldRenderer.MissColor);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Por qué un <c>Attack</c>/<c>SkillCast</c> se rechazó (<c>combat.SafeZone</c>,
+    /// <c>combat.OutOfRange</c>, <c>combat.OnCooldown</c>…). <b>Bug real encontrado esta sesión:</b>
+    /// el servidor siempre mandó este mensaje (<c>GameWorld.SendCombatFailure</c>, Fase 9), pero
+    /// ninguna pantalla lo enseñaba durante el combate —<c>ChatScreen</c> sólo mira el prefijo
+    /// <c>chat.</c> e <c>InventoryScreen</c> sólo se ve con el inventario abierto— así que un ataque
+    /// rechazado no daba ninguna pista de por qué. Es lo que reportó Mario como "no consigo pegar".
+    /// </summary>
+    private void OnCombatSystemMessage(S2CSystemMessage message)
+    {
+        const string Prefix = "combat.";
+        if (!message.Key.StartsWith(Prefix, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (!Enum.TryParse<ResultCode>(message.Key[Prefix.Length..], out var code))
+        {
+            return;
+        }
+
+        _combatHud.ShowCombatMessage(ResultCodeText.Describe(code));
+    }
+
+    /// <summary>Posición de mundo de una entidad por id, propia o remota, o <c>null</c> si ya no está a la vista.</summary>
+    private Vec2? PositionOf(int entityId)
+    {
+        if (entityId == _myEntityId)
+        {
+            return _local?.Current.Pos;
+        }
+
+        return _remotes.TryGetValue(entityId, out var remote) ? remote.State.Pos : null;
     }
 
     /// <summary>
@@ -458,6 +630,19 @@ public partial class WorldScreen : Node2D
             _net.InCombat);
         _hud.SetSkills(BuildSkillBarText());
 
+        _combatHud.SetVitals(_myHp, _myHpMax, _myMp, _myMpMax, _net.Level, _net.Xp, _net.XpToNextLevel);
+        _combatHud.SetWeapon(
+            WeaponSlot(_inventory.EquippedAt(EquipSlot.MainHand)),
+            WeaponSlot(_inventory.EquippedAt(EquipSlot.OffHand)));
+        // Al alcance de un ataque básico de verdad, no sólo "está en el radio del marco de HUD"
+        // (FindNearestTarget aquí usa el radio ancho de "quién tengo cerca" a propósito, ver
+        // TargetRangeTiles) — así el jugador ve de un vistazo si acercarse un poco más antes de
+        // pulsar, en vez de enterarse sólo cuando el ataque ya se ha rechazado.
+        var inMeleeRange = target is not null &&
+            Vec2.DistanceSquared(_local.Current.Pos, target.State.Pos) <= CombatConstants.MeleeRangeTiles * CombatConstants.MeleeRangeTiles;
+        _combatHud.SetTarget(target is null ? null : target.Name, target?.Hp ?? 0, target?.HpMax ?? 1, inMeleeRange);
+        _combatHud.SetSkills(BuildCombatSkillSlots());
+
         // Mientras no llegue el primer ZoneFlagsUpdate se enseña lo que el cliente deduce del
         // mapa; en cuanto el servidor habla, manda él.
         if (string.IsNullOrEmpty(_regionName))
@@ -469,6 +654,38 @@ public partial class WorldScreen : Node2D
         {
             _hud.SetRegion(_regionName, _regionFlags);
         }
+    }
+
+    /// <summary>Resuelve nombre y clave visual de un hueco de equipo para <c>CombatHud</c>, o <c>null</c> si está vacío.</summary>
+    private WeaponSlotInfo? WeaponSlot(ItemStackInfo? item)
+    {
+        if (item is null)
+        {
+            return null;
+        }
+
+        var displayName = _items is not null && _items.TryGet(item.DefKey, out var def) ? def.DisplayName : item.DefKey;
+        return new WeaponSlotInfo(displayName, item.DefKey);
+    }
+
+    /// <summary>Lo mismo que <see cref="BuildSkillBarText"/> pero estructurado, para que <c>CombatHud</c> pinte iconos y un cooldown de verdad en vez de texto.</summary>
+    private List<SkillSlotInfo> BuildCombatSkillSlots()
+    {
+        var slots = new List<SkillSlotInfo>(_classSkills.Length);
+        for (var i = 0; i < _classSkills.Length && i < SkillActionKeys.Length; i++)
+        {
+            var skill = _classSkills[i];
+            var locked = _net.Level < skill.RequiredLevel;
+            var cooldownFraction = 0f;
+            if (!locked && _skillCooldowns.TryGetValue(skill.Key, out var remaining))
+            {
+                cooldownFraction = (float)Math.Clamp(remaining / (skill.CooldownMs / 1000.0), 0.0, 1.0);
+            }
+
+            slots.Add(new SkillSlotInfo(skill.DisplayName, skill.Kind, locked, skill.RequiredLevel, cooldownFraction));
+        }
+
+        return slots;
     }
 
     /// <summary>Texto de la barra de habilidades del HUD: tecla, nombre, y cooldown si lo hay.</summary>

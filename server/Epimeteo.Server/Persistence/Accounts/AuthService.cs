@@ -60,7 +60,7 @@ public sealed class AuthService(
         await accounts.TouchLastLoginAsync(account.Id, remoteAddress, ct).ConfigureAwait(false);
         var token = await sessionTokens.IssueAsync(account.Id, remoteAddress, ct).ConfigureAwait(false);
 
-        return AuthOutcome.Success(account.Id, token, account.IsAdmin);
+        return AuthOutcome.Success(account.Id, token, account.Username, account.IsAdmin);
     }
 
     public async Task<AuthOutcome> RegisterAsync(
@@ -106,7 +106,7 @@ public sealed class AuthService(
 
         await loginAttempts.RecordAsync(ip, username, success: true, ct).ConfigureAwait(false);
         var token = await sessionTokens.IssueAsync(accountId.Value, remoteAddress, ct).ConfigureAwait(false);
-        return AuthOutcome.Success(accountId.Value, token);
+        return AuthOutcome.Success(accountId.Value, token, username);
     }
 
     private static bool IsUsernameValid(string username) =>

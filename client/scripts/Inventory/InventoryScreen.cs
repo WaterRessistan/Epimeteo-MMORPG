@@ -32,11 +32,16 @@ public partial class InventoryScreen : CanvasLayer
     {
         _net = GetNode<NetClient>("/root/NetClient");
 
+        // El canvas base es 480x270 (CLAUDE.md §2): el panel tiene que caber entero en pantalla,
+        // así que 30+20+20 huecos de bolsa (40px cada uno) más los 12 de equipo van dentro de un
+        // ScrollContainer en vez de estirar el panel más allá del borde visible.
+        var theme = GD.Load<Theme>("res://resources/ui/CompactUiTheme.tres");
         _root = new PanelContainer
         {
             Visible = false,
+            Theme = theme,
             AnchorLeft = 0.5f, AnchorRight = 0.5f, AnchorTop = 0.5f, AnchorBottom = 0.5f,
-            OffsetLeft = -260, OffsetRight = 260, OffsetTop = -180, OffsetBottom = 180,
+            OffsetLeft = -225, OffsetRight = 225, OffsetTop = -125, OffsetBottom = 125,
         };
         AddChild(_root);
 
@@ -44,14 +49,24 @@ public partial class InventoryScreen : CanvasLayer
         _root.AddChild(layout);
         layout.AddChild(new Label { Text = "Inventario (I para cerrar)" });
 
+        var scroll = new ScrollContainer
+        {
+            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+        };
+        layout.AddChild(scroll);
+
+        var scrollContent = new VBoxContainer();
+        scroll.AddChild(scrollContent);
+
         var tabs = new TabContainer();
-        layout.AddChild(tabs);
+        scrollContent.AddChild(tabs);
         BuildBagTab(tabs, "General", ContainerId.General, InventoryConstants.GeneralCapacity);
         BuildBagTab(tabs, "Armas", ContainerId.WeaponBag, InventoryConstants.WeaponBagCapacity);
         BuildBagTab(tabs, "Armaduras", ContainerId.ArmorBag, InventoryConstants.ArmorBagCapacity);
 
         _equipment = new EquipmentPanel();
-        layout.AddChild(_equipment);
+        scrollContent.AddChild(_equipment);
         _equipment.Configure(HandleDrop);
 
         _message = new Label { Modulate = new Color(1f, 0.7f, 0.4f) };

@@ -165,6 +165,7 @@ public partial class CharacterSelectScreen : Control
         _createSlot = slot;
         _nameEdit.Text = string.Empty;
         _messageLabel.Text = string.Empty;
+        _slots.Visible = false;
         _createPanel.Visible = true;
     }
 
@@ -172,6 +173,7 @@ public partial class CharacterSelectScreen : Control
     {
         _createSlot = -1;
         _createPanel.Visible = false;
+        _slots.Visible = true;
     }
 
     private void OnConfirmCreatePressed()
